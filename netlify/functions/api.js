@@ -3,145 +3,158 @@ const APP_KEY = 'K003dwNhrjinpVEyi4VKsJxxZmL3LO4';
 const BUCKET  = 'melo-music-2026';
 const META    = 'melo-metadata.json';
 
-const CORS = {
+const CH = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 };
 
-async function b2Auth() {
+function ok(body)  { return { statusCode:200, headers:{...CH,'Content-Type':'application/json'}, body: typeof body==='string'?body:JSON.stringify(body) }; }
+function err(msg)  { return { statusCode:500, headers:CH, body: JSON.stringify({error:msg}) }; }
+
+async function auth() {
   const r = await fetch('https://api.backblazeb2.com/b2api/v2/b2_authorize_account', {
-    headers: { Authorization: 'Basic ' + Buffer.from(`${KEY_ID}:${APP_KEY}`).toString('base64') },
+    headers: { Authorization: 'Basic ' + Buffer.from(`${KEY_ID}:${APP_KEY}`).toString('base64') }
   });
-  if (!r.ok) throw new Error('Auth B2 échouée: ' + r.status);
+  if (!r.ok) throw new Error('Auth B2 failed: ' + r.status);
   return r.json();
 }
 
-async function getBucketId(auth) {
-  if (auth.allowed?.bucketId) return auth.allowed.bucketId;
-  const r = await fetch(`${auth.apiUrl}/b2api/v2/b2_list_buckets`, {
+async function bucketId(a) {
+  if (a.allowed?.bucketId) return a.allowed.bucketId;
+  const r = await fetch(`${a.apiUrl}/b2api/v2/b2_list_buckets`, {
     method: 'POST',
-    headers: { Authorization: auth.authorizationToken, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ accountId: auth.accountId, bucketName: BUCKET }),
+    headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accountId: a.accountId, bucketName: BUCKET })
   });
   const d = await r.json();
+  if (!d.buckets?.length) throw new Error('Bucket "'+BUCKET+'" introuvable');
   return d.buckets[0].bucketId;
 }
 
-async function getUploadUrl(auth, bucketId) {
-  const r = await fetch(`${auth.apiUrl}/b2api/v2/b2_get_upload_url`, {
+/* Configure automatiquement le CORS pour autoriser les uploads depuis le navigateur */
+async function fixCors(a, bid) {
+  await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
     method: 'POST',
-    headers: { Authorization: auth.authorizationToken, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ bucketId }),
+    headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      accountId: a.accountId,
+      bucketId: bid,
+      corsRules: [{
+        corsRuleName: 'allowAll',
+        allowedOrigins: ['*'],
+        allowedHeaders: ['*'],
+        allowedOperations: ['b2_download_file_from_url', 'b2_upload_file'],
+        exposeHeaders: ['x-bz-upload-timestamp', 'X-Bz-File-Name'],
+        maxAgeSeconds: 3600
+      }]
+    })
+  });
+}
+
+async function getUploadUrl(a, bid) {
+  const r = await fetch(`${a.apiUrl}/b2api/v2/b2_get_upload_url`, {
+    method: 'POST',
+    headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bucketId: bid })
   });
   return r.json();
 }
 
-async function uploadToB2(upData, key, body, contentType) {
+async function b2Upload(upUrl, upToken, key, body, contentType) {
   const { createHash } = require('crypto');
-  const buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  const buf  = Buffer.isBuffer(body) ? body : Buffer.from(body);
   const sha1 = createHash('sha1').update(buf).digest('hex');
-  const r = await fetch(upData.uploadUrl, {
+  const r = await fetch(upUrl, {
     method: 'POST',
     headers: {
-      Authorization: upData.authorizationToken,
+      Authorization: upToken,
       'X-Bz-File-Name': encodeURIComponent(key),
       'Content-Type': contentType,
       'X-Bz-Content-Sha1': sha1,
     },
     body: buf,
   });
-  if (!r.ok) throw new Error('Upload B2 échoué: ' + await r.text());
+  if (!r.ok) throw new Error('B2 upload failed: ' + await r.text());
   return r.json();
 }
 
 exports.handler = async (event) => {
-  if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: CORS, body: '' };
+  if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: CH, body: '' };
 
-  const action = event.queryStringParameters?.action;
+  const q = event.queryStringParameters || {};
 
   try {
-    const auth = await b2Auth();
-    const bucketId = await getBucketId(auth);
+    const a   = await auth();
+    const bid = await bucketId(a);
 
-    /* ── INIT : retourne metadata + token de téléchargement (1 seul appel au démarrage) ── */
-    if (action === 'init') {
+    /* ── INIT : appelé une seule fois au démarrage
+       - Configure le CORS automatiquement
+       - Charge uniquement les titres (pas les fichiers audio)
+       - Retourne les tokens de téléchargement et d'upload ── */
+    if (q.action === 'init') {
+      await fixCors(a, bid);
+
       let tracks = [];
       try {
-        const r = await fetch(`${auth.downloadUrl}/file/${BUCKET}/${META}`, {
-          headers: { Authorization: auth.authorizationToken },
+        const r = await fetch(`${a.downloadUrl}/file/${BUCKET}/${META}`, {
+          headers: { Authorization: a.authorizationToken }
         });
         if (r.ok) tracks = await r.json();
       } catch (_) {}
 
-      const dlR = await fetch(`${auth.apiUrl}/b2api/v2/b2_get_download_authorization`, {
-        method: 'POST',
-        headers: { Authorization: auth.authorizationToken, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bucketId, fileNamePrefix: '', validDurationInSeconds: 14400 }),
-      });
+      const [dlR, upData] = await Promise.all([
+        fetch(`${a.apiUrl}/b2api/v2/b2_get_download_authorization`, {
+          method: 'POST',
+          headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bucketId: bid, fileNamePrefix: '', validDurationInSeconds: 43200 })
+        }),
+        getUploadUrl(a, bid)
+      ]);
+
       const dlAuth = await dlR.json();
 
-      return {
-        statusCode: 200,
-        headers: { ...CORS, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tracks, downloadUrl: auth.downloadUrl, downloadToken: dlAuth.authorizationToken }),
-      };
+      return ok({
+        tracks,
+        downloadUrl:   a.downloadUrl,
+        downloadToken: dlAuth.authorizationToken,
+        uploadUrl:     upData.uploadUrl,
+        uploadToken:   upData.authorizationToken,
+      });
     }
 
-    /* ── UPLOAD CREDENTIALS : retourne l'URL d'upload direct B2 ── */
-    if (action === 'upload-creds') {
-      const upData = await getUploadUrl(auth, bucketId);
-      return {
-        statusCode: 200,
-        headers: { ...CORS, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uploadUrl: upData.uploadUrl, authorizationToken: upData.authorizationToken }),
-      };
+    /* ── UPLOAD-CREDS : URL d'upload fraîche (1 par fichier) ── */
+    if (q.action === 'upload-creds') {
+      const up = await getUploadUrl(a, bid);
+      return ok({ uploadUrl: up.uploadUrl, authorizationToken: up.authorizationToken });
     }
 
-    /* ── SAVE METADATA (petit fichier JSON, proxy complet) ── */
-    if (action === 'save-meta' && event.httpMethod === 'POST') {
+    /* ── SAVE-META : sauvegarde la liste des titres ── */
+    if (q.action === 'save-meta' && event.httpMethod === 'POST') {
       const body = event.isBase64Encoded
         ? Buffer.from(event.body, 'base64').toString('utf-8')
         : (event.body || '[]');
-      const upData = await getUploadUrl(auth, bucketId);
-      await uploadToB2(upData, META, body, 'application/json');
-      return { statusCode: 200, headers: CORS, body: '{"ok":true}' };
-    }
-
-    /* ── UPLOAD FICHIER AUDIO (proxy complet pour éviter CORS sur PUT) ── */
-    if (action === 'upload-file' && event.httpMethod === 'POST') {
-      const key  = event.queryStringParameters.key;
-      const type = event.queryStringParameters.type || 'audio/mpeg';
-      const buf  = event.isBase64Encoded
-        ? Buffer.from(event.body, 'base64')
-        : Buffer.from(event.body || '', 'binary');
-      const upData = await getUploadUrl(auth, bucketId);
-      const result = await uploadToB2(upData, key, buf, type);
-      return {
-        statusCode: 200,
-        headers: { ...CORS, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileId: result.fileId }),
-      };
+      const up = await getUploadUrl(a, bid);
+      await b2Upload(up.uploadUrl, up.authorizationToken, META, body, 'application/json');
+      return ok({ ok: true });
     }
 
     /* ── DELETE ── */
-    if (action === 'delete') {
-      const key    = event.queryStringParameters.key;
-      const fileId = event.queryStringParameters.fileId;
-      if (key && fileId) {
-        await fetch(`${auth.apiUrl}/b2api/v2/b2_delete_file_version`, {
+    if (q.action === 'delete') {
+      if (q.key && q.fileId) {
+        await fetch(`${a.apiUrl}/b2api/v2/b2_delete_file_version`, {
           method: 'POST',
-          headers: { Authorization: auth.authorizationToken, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fileName: key, fileId }),
+          headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileName: q.key, fileId: q.fileId })
         });
       }
-      return { statusCode: 200, headers: CORS, body: '{"ok":true}' };
+      return ok({ ok: true });
     }
 
-    return { statusCode: 404, headers: CORS, body: 'Action inconnue' };
+    return { statusCode: 404, headers: CH, body: 'Action inconnue' };
 
   } catch (e) {
-    console.error('api error:', e);
-    return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: e.message }) };
+    console.error('api error:', e.message);
+    return err(e.message);
   }
 };
