@@ -46,7 +46,7 @@
     .empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;color:#6b6880;}
     .empty-icon{width:72px;height:72px;border-radius:16px;background:#1e1b2a;display:flex;align-items:center;justify-content:center;}
     .cta{background:#8b5cf6;border:none;border-radius:10px;padding:9px 22px;color:#fff;font-weight:600;font-size:13px;cursor:pointer;}
-    #import-tab{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:24px 20px;overflow-y:auto;gap:0;}
+    #import-tab{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:24px 20px;overflow-y:auto;}
     .dropzone{width:100%;max-width:480px;padding:40px 28px;border:2px dashed rgba(255,255,255,.07);border-radius:16px;background:#14121c;display:flex;flex-direction:column;align-items:center;gap:14px;cursor:pointer;transition:all .18s;flex-shrink:0;}
     .dropzone.drag{border-color:#8b5cf6;background:rgba(139,92,246,.08);}
     .dz-icon{width:56px;height:56px;border-radius:13px;background:#1e1b2a;border:1px solid rgba(255,255,255,.07);display:flex;align-items:center;justify-content:center;transition:all .18s;}
@@ -61,7 +61,7 @@
     .upbg{height:3px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden;}
     .upfill{height:100%;background:#8b5cf6;border-radius:2px;transition:width .1s;}
     .updone{color:#10b981;font-size:12px;flex-shrink:0;}
-    .uperr{color:#ef4444;font-size:11px;flex-shrink:0;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .uperr{color:#ef4444;font-size:11px;flex-shrink:0;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
     #player{background:#14121c;border-top:1px solid rgba(255,255,255,.07);padding:12px 18px 14px;flex-shrink:0;}
     .seekrow{display:flex;align-items:center;gap:9px;margin-bottom:11px;}
     .ttime{font-size:11px;color:#6b6880;min-width:32px;font-family:monospace;}
@@ -173,16 +173,15 @@
 <audio id="aud"></audio>
 
 <script>
-const API = '/.netlify/functions/api';
+const API    = '/.netlify/functions/api';
 const BUCKET = 'melo-music-2026';
 
 let tracks=[], cur=null, isPlaying=false, isShuffle=false, repeatMode=0, isMuted=false, volume=0.8;
-let dlUrl='', dlToken='';
+let dlUrl='', dlToken='', upUrl='', upToken='';
 
 const aud = document.getElementById('aud');
 aud.volume = volume;
 
-/* ── UTILS ── */
 const fmt  = t => (!t||isNaN(t)) ? '0:00' : `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
 const hue  = s => { let h=0; for(let c of s) h=((h<<5)-h+c.charCodeAt(0))|0; return Math.abs(h)%360; };
 const abg  = h => `hsl(${h},40%,14%)`;
@@ -197,17 +196,13 @@ function notify(msg,ms=2800){
   clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove('show'),ms);
 }
 
-function playUrl(key){
-  return `${dlUrl}/file/${BUCKET}/${encodeURIComponent(key)}?Authorization=${encodeURIComponent(dlToken)}`;
-}
+/* URL de lecture — ne charge l'audio QUE quand on appuie play */
+function playUrl(key){ return `${dlUrl}/file/${BUCKET}/${encodeURIComponent(key)}?Authorization=${encodeURIComponent(dlToken)}`; }
 
-/* ── SAVE META ── */
 async function saveMeta(){
   try {
-    await fetch(`${API}?action=save-meta`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(tracks),
+    await fetch(`${API}?action=save-meta`,{
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(tracks)
     });
   } catch(e){ console.error('saveMeta',e); }
 }
@@ -215,7 +210,7 @@ async function saveMeta(){
 /* ── LIBRARY ── */
 function renderLib(){
   const q=(document.getElementById('srch')?.value||'').toLowerCase();
-  const shown=q ? tracks.filter(t=>(t.name+t.artist).toLowerCase().includes(q)) : tracks;
+  const shown=q?tracks.filter(t=>(t.name+t.artist).toLowerCase().includes(q)):tracks;
   const el=document.getElementById('libinner');
   if(!tracks.length){
     document.getElementById('srchwrap').style.display='none';
@@ -233,7 +228,7 @@ function renderLib(){
   if(!shown.length){ el.innerHTML=`<p style="text-align:center;color:#6b6880;font-size:13px;margin-top:60px">Aucun résultat</p>`; return; }
   el.innerHTML=`<p class="lib-count">${shown.length} titre${shown.length>1?'s':''}</p>`+
     shown.map(t=>{
-      const ri=tracks.indexOf(t), isCur=ri===cur, h=t.hue||hue(t.name);
+      const ri=tracks.indexOf(t),isCur=ri===cur,h=t.hue||hue(t.name);
       const art=isCur&&isPlaying
         ?`<div class="eq on"><span style="height:8px"></span><span style="height:14px"></span><span style="height:10px"></span></div>`
         :note(18,afg(h));
@@ -261,12 +256,11 @@ async function delTrack(e,id){
   renderLib(); notify('Piste supprimée ✓');
 }
 
-/* ── PLAYBACK — l'audio se charge UNIQUEMENT quand on appuie play ── */
+/* ── PLAYBACK — audio chargé UNIQUEMENT à ce moment ── */
 function playAt(idx){
   const t=tracks[idx]; if(!t||!dlToken) return;
   cur=idx;
-  /* On assigne l'URL seulement maintenant — aucun téléchargement avant ce moment */
-  aud.src = playUrl(t.key);
+  aud.src=playUrl(t.key);
   aud.load();
   aud.play().catch(e=>console.error('play',e));
   renderLib(); updateNP();
@@ -329,7 +323,6 @@ function updateNP(){
   } else np.innerHTML='<p style="font-size:13px;color:#3a3550">— rien en lecture</p>';
 }
 
-/* ── SEEKBAR ── */
 document.getElementById('sb').addEventListener('click',e=>{
   if(!aud.duration) return;
   const r=e.currentTarget.getBoundingClientRect();
@@ -345,7 +338,6 @@ aud.addEventListener('play', ()=>{ isPlaying=true; updatePBtn(); renderLib(); })
 aud.addEventListener('pause',()=>{ isPlaying=false; updatePBtn(); renderLib(); });
 aud.addEventListener('ended',goNext);
 
-/* ── TABS ── */
 function setTab(t){
   document.getElementById('library').style.display   =t==='lib'?'':'none';
   document.getElementById('import-tab').style.display=t==='imp'?'':'none';
@@ -366,11 +358,17 @@ function handleFiles(files){
   af.forEach(uploadFile);
 }
 
+async function getFreshUploadCreds(){
+  const r = await fetch(`${API}?action=upload-creds`);
+  if(!r.ok) throw new Error('Credentials upload indisponibles');
+  return r.json();
+}
+
 async function uploadFile(file){
-  const id  = Date.now()+'_'+Math.random().toString(36).slice(2);
-  const ext = (file.name.match(/\.[^.]+$/)||['.mp3'])[0].toLowerCase();
-  const key = 'tracks/'+id+ext;
-  const name= file.name.replace(/\.[^.]+$/,'').replace(/[_\-]+/g,' ').trim();
+  const id   = Date.now()+'_'+Math.random().toString(36).slice(2);
+  const ext  = (file.name.match(/\.[^.]+$/)||['.mp3'])[0].toLowerCase();
+  const key  = 'tracks/'+id+ext;
+  const name = file.name.replace(/\.[^.]+$/,'').replace(/[_\-]+/g,' ').trim();
 
   const ul=document.getElementById('uplist');
   const item=document.createElement('div');
@@ -379,23 +377,18 @@ async function uploadFile(file){
     <div class="upbg"><div class="upfill" id="bar-${id}" style="width:0%"></div></div>`;
   ul.prepend(item);
 
-  const setP = p => {
-    const pe=document.getElementById('pct-'+id), be=document.getElementById('bar-'+id);
-    if(pe) pe.textContent=p+'%'; if(be) be.style.width=p+'%';
-  };
+  const setP=p=>{ const pe=document.getElementById('pct-'+id),be=document.getElementById('bar-'+id); if(pe)pe.textContent=p+'%'; if(be)be.style.width=p+'%'; };
 
   try {
-    /* Récupérer les credentials d'upload depuis la fonction Netlify */
-    const credsR = await fetch(`${API}?action=upload-creds`);
-    if(!credsR.ok) throw new Error('Impossible d\'obtenir les credentials: '+credsR.status);
-    const creds = await credsR.json();
+    /* Obtenir les credentials frais depuis le serveur Netlify */
+    const creds = await getFreshUploadCreds();
 
-    /* Calculer SHA1 du fichier (intégrité des données) */
+    /* Calculer SHA1 (intégrité B2) */
     const buf  = await file.arrayBuffer();
     const hash = await crypto.subtle.digest('SHA-1', buf);
     const sha1 = Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
 
-    /* Upload direct vers B2 via XHR (affiche la progression) */
+    /* Upload direct vers B2 — CORS maintenant autorisé grâce à fixCors() */
     const fileId = await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', creds.uploadUrl);
@@ -403,15 +396,15 @@ async function uploadFile(file){
       xhr.setRequestHeader('X-Bz-File-Name',     encodeURIComponent(key));
       xhr.setRequestHeader('Content-Type',       file.type||'audio/mpeg');
       xhr.setRequestHeader('X-Bz-Content-Sha1',  sha1);
-      xhr.upload.onprogress = e => { if(e.lengthComputable) setP(Math.round(e.loaded/e.total*100)); };
-      xhr.onload = () => {
-        try {
-          const res = JSON.parse(xhr.responseText);
-          if(xhr.status >= 200 && xhr.status < 300) resolve(res.fileId);
-          else reject(new Error(`B2 ${xhr.status}: ${res.message||xhr.responseText}`));
-        } catch(e){ reject(new Error('Réponse invalide')); }
+      xhr.upload.onprogress=e=>{ if(e.lengthComputable) setP(Math.round(e.loaded/e.total*100)); };
+      xhr.onload=()=>{
+        try{
+          const res=JSON.parse(xhr.responseText);
+          if(xhr.status>=200&&xhr.status<300) resolve(res.fileId);
+          else reject(new Error(`B2 ${xhr.status}: ${res.message||xhr.responseText.slice(0,80)}`));
+        }catch(e){ reject(new Error('Réponse invalide de B2')); }
       };
-      xhr.onerror = () => reject(new Error('Erreur réseau'));
+      xhr.onerror=()=>reject(new Error('Erreur réseau — vérifiez votre connexion'));
       xhr.send(new Blob([buf]));
     });
 
@@ -423,26 +416,27 @@ async function uploadFile(file){
     notify('✓ '+name+' ajouté');
 
   } catch(err){
-    console.error('upload error:', err);
+    console.error('upload error:',err);
     item.querySelector('.uphd').innerHTML=`<span class="upname">${esc(name)}</span><span class="uperr" title="${esc(err.message)}">✗ ${esc(err.message)}</span>`;
     item.querySelector('.upbg').style.display='none';
     notify('Erreur: '+err.message.slice(0,60));
   }
 }
 
-/* ── INIT — 1 seul appel réseau au démarrage, charge uniquement les titres ── */
+/* ── INIT — 1 appel réseau au démarrage, charge uniquement les titres ── */
 async function init(){
-  try {
+  try{
     ldmsg('Chargement de votre bibliothèque...');
-    const r = await fetch(`${API}?action=init`);
+    const r=await fetch(`${API}?action=init`);
     if(!r.ok) throw new Error('Serveur indisponible ('+r.status+')');
-    const data = await r.json();
-    tracks    = data.tracks || [];
-    dlUrl     = data.downloadUrl;
-    dlToken   = data.downloadToken;
+    const d=await r.json();
+    if(d.error) throw new Error(d.error);
+    tracks   =d.tracks||[];
+    dlUrl    =d.downloadUrl;
+    dlToken  =d.downloadToken;
     document.getElementById('loading').style.display='none';
     renderLib();
-  } catch(e){
+  }catch(e){
     console.error('init',e);
     document.getElementById('ldmsg').textContent='❌ '+e.message;
     document.getElementById('ldmsg').style.color='#ef4444';
