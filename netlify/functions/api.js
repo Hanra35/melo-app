@@ -9,10 +9,10 @@ const CH = {
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 };
 
-function ok(body)  { return { statusCode:200, headers:{...CH,'Content-Type':'application/json'}, body: typeof body==='string'?body:JSON.stringify(body) }; }
-function err(msg)  { return { statusCode:500, headers:CH, body: JSON.stringify({error:msg}) }; }
+function ok(body) { return { statusCode:200, headers:{...CH,'Content-Type':'application/json'}, body: typeof body==='string'?body:JSON.stringify(body) }; }
+function err(msg) { return { statusCode:500, headers:CH, body: JSON.stringify({error:msg}) }; }
 
-async function auth() {
+async function b2Auth() {
   const r = await fetch('https://api.backblazeb2.com/b2api/v2/b2_authorize_account', {
     headers: { Authorization: 'Basic ' + Buffer.from(`${KEY_ID}:${APP_KEY}`).toString('base64') }
   });
@@ -20,7 +20,7 @@ async function auth() {
   return r.json();
 }
 
-async function bucketId(a) {
+async function getBucketId(a) {
   if (a.allowed?.bucketId) return a.allowed.bucketId;
   const r = await fetch(`${a.apiUrl}/b2api/v2/b2_list_buckets`, {
     method: 'POST',
@@ -28,13 +28,13 @@ async function bucketId(a) {
     body: JSON.stringify({ accountId: a.accountId, bucketName: BUCKET })
   });
   const d = await r.json();
-  if (!d.buckets?.length) throw new Error('Bucket "'+BUCKET+'" introuvable');
+  if (!d.buckets?.length) throw new Error('Bucket "' + BUCKET + '" introuvable');
   return d.buckets[0].bucketId;
 }
 
-/* Configure automatiquement le CORS pour autoriser les uploads depuis le navigateur */
+/* ── CORS FIX — noms d'opérations corrects selon la doc B2 ── */
 async function fixCors(a, bid) {
-  await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
+  const r = await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
     method: 'POST',
     headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -44,12 +44,20 @@ async function fixCors(a, bid) {
         corsRuleName: 'allowAll',
         allowedOrigins: ['*'],
         allowedHeaders: ['*'],
-        allowedOperations: ['b2_download_file_from_url', 'b2_upload_file'],
-        exposeHeaders: ['x-bz-upload-timestamp', 'X-Bz-File-Name'],
+        allowedOperations: [
+          'b2_download_file_by_name',
+          'b2_download_file_by_id',
+          'b2_upload_file',
+          'b2_upload_part'
+        ],
+        exposeHeaders: ['x-bz-upload-timestamp', 'X-Bz-File-Name', 'Content-Length'],
         maxAgeSeconds: 3600
       }]
     })
   });
+  const result = await r.json();
+  if (!r.ok) throw new Error('fixCors failed: ' + JSON.stringify(result));
+  console.log('CORS OK:', JSON.stringify(result.corsRules));
 }
 
 async function getUploadUrl(a, bid) {
@@ -61,9 +69,8 @@ async function getUploadUrl(a, bid) {
   return r.json();
 }
 
-async function b2Upload(upUrl, upToken, key, body, contentType) {
+async function b2UploadBuf(upUrl, upToken, key, buf, contentType) {
   const { createHash } = require('crypto');
-  const buf  = Buffer.isBuffer(body) ? body : Buffer.from(body);
   const sha1 = createHash('sha1').update(buf).digest('hex');
   const r = await fetch(upUrl, {
     method: 'POST',
@@ -81,17 +88,13 @@ async function b2Upload(upUrl, upToken, key, body, contentType) {
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: CH, body: '' };
-
   const q = event.queryStringParameters || {};
 
   try {
-    const a   = await auth();
-    const bid = await bucketId(a);
+    const a   = await b2Auth();
+    const bid = await getBucketId(a);
 
-    /* ── INIT : appelé une seule fois au démarrage
-       - Configure le CORS automatiquement
-       - Charge uniquement les titres (pas les fichiers audio)
-       - Retourne les tokens de téléchargement et d'upload ── */
+    /* ── INIT ── */
     if (q.action === 'init') {
       await fixCors(a, bid);
 
@@ -103,39 +106,29 @@ exports.handler = async (event) => {
         if (r.ok) tracks = await r.json();
       } catch (_) {}
 
-      const [dlR, upData] = await Promise.all([
-        fetch(`${a.apiUrl}/b2api/v2/b2_get_download_authorization`, {
-          method: 'POST',
-          headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bucketId: bid, fileNamePrefix: '', validDurationInSeconds: 43200 })
-        }),
-        getUploadUrl(a, bid)
-      ]);
-
+      const dlR = await fetch(`${a.apiUrl}/b2api/v2/b2_get_download_authorization`, {
+        method: 'POST',
+        headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bucketId: bid, fileNamePrefix: '', validDurationInSeconds: 43200 })
+      });
       const dlAuth = await dlR.json();
 
-      return ok({
-        tracks,
-        downloadUrl:   a.downloadUrl,
-        downloadToken: dlAuth.authorizationToken,
-        uploadUrl:     upData.uploadUrl,
-        uploadToken:   upData.authorizationToken,
-      });
+      return ok({ tracks, downloadUrl: a.downloadUrl, downloadToken: dlAuth.authorizationToken });
     }
 
-    /* ── UPLOAD-CREDS : URL d'upload fraîche (1 par fichier) ── */
+    /* ── UPLOAD-CREDS — URL d'upload fraîche pour chaque fichier ── */
     if (q.action === 'upload-creds') {
       const up = await getUploadUrl(a, bid);
       return ok({ uploadUrl: up.uploadUrl, authorizationToken: up.authorizationToken });
     }
 
-    /* ── SAVE-META : sauvegarde la liste des titres ── */
+    /* ── SAVE-META ── */
     if (q.action === 'save-meta' && event.httpMethod === 'POST') {
       const body = event.isBase64Encoded
         ? Buffer.from(event.body, 'base64').toString('utf-8')
         : (event.body || '[]');
       const up = await getUploadUrl(a, bid);
-      await b2Upload(up.uploadUrl, up.authorizationToken, META, body, 'application/json');
+      await b2UploadBuf(up.uploadUrl, up.authorizationToken, META, Buffer.from(body), 'application/json');
       return ok({ ok: true });
     }
 
