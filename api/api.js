@@ -32,7 +32,7 @@ async function getBucketId(a) {
 }
 
 async function fixCors(a, bid) {
-  const r = await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
+  await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
     method: 'POST',
     headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -53,7 +53,6 @@ async function fixCors(a, bid) {
       }]
     })
   });
-  if (!r.ok) throw new Error('fixCors failed: ' + await r.text());
 }
 
 async function getUploadUrl(a, bid) {
@@ -81,24 +80,10 @@ async function b2UploadBuf(upUrl, upToken, key, buf, contentType) {
   return r.json();
 }
 
-/* Lire le body brut de la requête Vercel */
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let data = [];
-    req.on('data', chunk => data.push(chunk));
-    req.on('end',  () => resolve(Buffer.concat(data)));
-    req.on('error', reject);
-  });
-}
-
 module.exports = async (req, res) => {
   setCors(res);
 
-  /* Preflight CORS */
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
-  }
+  if (req.method === 'OPTIONS') { res.status(200).end(); return; }
 
   const action = req.query?.action;
 
@@ -110,16 +95,20 @@ module.exports = async (req, res) => {
     if (action === 'init') {
       await fixCors(a, bid);
 
-      let meta = { tracks: [], playlists: [] };
+      let tracks = [], playlists = [];
       try {
         const r = await fetch(`${a.downloadUrl}/file/${BUCKET}/${META}`, {
           headers: { Authorization: a.authorizationToken }
         });
         if (r.ok) {
           const parsed = await r.json();
-          /* Compatibilité ancien format (tableau) et nouveau (objet) */
-          if (Array.isArray(parsed)) meta.tracks = parsed;
-          else meta = parsed;
+          /* Compatibilité : ancien format = tableau brut, nouveau = {tracks, playlists} */
+          if (Array.isArray(parsed)) {
+            tracks = parsed;
+          } else {
+            tracks    = Array.isArray(parsed.tracks)    ? parsed.tracks    : [];
+            playlists = Array.isArray(parsed.playlists) ? parsed.playlists : [];
+          }
         }
       } catch (_) {}
 
@@ -130,12 +119,7 @@ module.exports = async (req, res) => {
       });
       const dlAuth = await dlR.json();
 
-      res.status(200).json({
-        tracks:        meta.tracks   || [],
-        playlists:     meta.playlists|| [],
-        downloadUrl:   a.downloadUrl,
-        downloadToken: dlAuth.authorizationToken,
-      });
+      res.status(200).json({ tracks, playlists, downloadUrl: a.downloadUrl, downloadToken: dlAuth.authorizationToken });
       return;
     }
 
@@ -147,8 +131,12 @@ module.exports = async (req, res) => {
     }
 
     /* ── SAVE-META ── */
+    /* Vercel parse automatiquement le JSON — on utilise req.body directement */
     if (action === 'save-meta' && req.method === 'POST') {
-      const buf = await readBody(req);
+      const body = req.body;
+      const tracks    = Array.isArray(body?.tracks)    ? body.tracks    : (Array.isArray(body) ? body : []);
+      const playlists = Array.isArray(body?.playlists) ? body.playlists : [];
+      const buf = Buffer.from(JSON.stringify({ tracks, playlists }), 'utf-8');
       const up  = await getUploadUrl(a, bid);
       await b2UploadBuf(up.uploadUrl, up.authorizationToken, META, buf, 'application/json');
       res.status(200).json({ ok: true });
