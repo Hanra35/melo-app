@@ -36,19 +36,11 @@ async function fixCors(a, bid) {
     method: 'POST',
     headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      accountId: a.accountId,
-      bucketId: bid,
+      accountId: a.accountId, bucketId: bid,
       corsRules: [{
-        corsRuleName: 'allowAll',
-        allowedOrigins: ['*'],
-        allowedHeaders: ['*'],
-        allowedOperations: [
-          'b2_download_file_by_name',
-          'b2_download_file_by_id',
-          'b2_upload_file',
-          'b2_upload_part'
-        ],
-        exposeHeaders: ['x-bz-upload-timestamp', 'X-Bz-File-Name', 'Content-Length'],
+        corsRuleName: 'allowAll', allowedOrigins: ['*'], allowedHeaders: ['*'],
+        allowedOperations: ['b2_download_file_by_name','b2_download_file_by_id','b2_upload_file','b2_upload_part'],
+        exposeHeaders: ['x-bz-upload-timestamp','X-Bz-File-Name','Content-Length'],
         maxAgeSeconds: 3600
       }]
     })
@@ -82,9 +74,7 @@ async function b2UploadBuf(upUrl, upToken, key, buf, contentType) {
 
 module.exports = async (req, res) => {
   setCors(res);
-
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
-
   const action = req.query?.action;
 
   try {
@@ -94,20 +84,20 @@ module.exports = async (req, res) => {
     /* ── INIT ── */
     if (action === 'init') {
       await fixCors(a, bid);
-
-      let tracks = [], playlists = [];
+      let meta = { tracks: [], playlists: [], albums: [], artists: [] };
       try {
         const r = await fetch(`${a.downloadUrl}/file/${BUCKET}/${META}`, {
           headers: { Authorization: a.authorizationToken }
         });
         if (r.ok) {
           const parsed = await r.json();
-          /* Compatibilité : ancien format = tableau brut, nouveau = {tracks, playlists} */
           if (Array.isArray(parsed)) {
-            tracks = parsed;
+            meta.tracks = parsed;
           } else {
-            tracks    = Array.isArray(parsed.tracks)    ? parsed.tracks    : [];
-            playlists = Array.isArray(parsed.playlists) ? parsed.playlists : [];
+            meta.tracks    = Array.isArray(parsed.tracks)    ? parsed.tracks    : [];
+            meta.playlists = Array.isArray(parsed.playlists) ? parsed.playlists : [];
+            meta.albums    = Array.isArray(parsed.albums)    ? parsed.albums    : [];
+            meta.artists   = Array.isArray(parsed.artists)   ? parsed.artists   : [];
           }
         }
       } catch (_) {}
@@ -119,7 +109,14 @@ module.exports = async (req, res) => {
       });
       const dlAuth = await dlR.json();
 
-      res.status(200).json({ tracks, playlists, downloadUrl: a.downloadUrl, downloadToken: dlAuth.authorizationToken });
+      res.status(200).json({
+        tracks:        meta.tracks,
+        playlists:     meta.playlists,
+        albums:        meta.albums,
+        artists:       meta.artists,
+        downloadUrl:   a.downloadUrl,
+        downloadToken: dlAuth.authorizationToken,
+      });
       return;
     }
 
@@ -130,13 +127,15 @@ module.exports = async (req, res) => {
       return;
     }
 
-    /* ── SAVE-META ── */
-    /* Vercel parse automatiquement le JSON — on utilise req.body directement */
+    /* ── SAVE-META — sauvegarde tracks + playlists + albums + artists ── */
     if (action === 'save-meta' && req.method === 'POST') {
       const body = req.body;
+      /* Accepte ancien format (tableau brut) et nouveau format (objet complet) */
       const tracks    = Array.isArray(body?.tracks)    ? body.tracks    : (Array.isArray(body) ? body : []);
       const playlists = Array.isArray(body?.playlists) ? body.playlists : [];
-      const buf = Buffer.from(JSON.stringify({ tracks, playlists }), 'utf-8');
+      const albums    = Array.isArray(body?.albums)    ? body.albums    : [];
+      const artists   = Array.isArray(body?.artists)   ? body.artists   : [];
+      const buf = Buffer.from(JSON.stringify({ tracks, playlists, albums, artists }), 'utf-8');
       const up  = await getUploadUrl(a, bid);
       await b2UploadBuf(up.uploadUrl, up.authorizationToken, META, buf, 'application/json');
       res.status(200).json({ ok: true });
@@ -158,7 +157,6 @@ module.exports = async (req, res) => {
     }
 
     res.status(404).json({ error: 'Action inconnue' });
-
   } catch (e) {
     console.error('api error:', e.message);
     res.status(500).json({ error: e.message });
