@@ -113,11 +113,11 @@
     .eq.on span:nth-child(3){animation:b3 .7s ease-in-out infinite alternate .36s;}
 
     /* ══ MINI PLAYER ══ */
-    #mini-player{margin-bottom: 592px;position:fixed;bottom:calc(var(--safe-b) + 10px);left:196px;right:172px;height:56px;background:var(--mini-bg);border-radius:20px;display:-webkit-flex;display:flex;align-items:center;padding:0 10px;cursor:pointer;z-index:90;box-shadow:var(--sh);transform:translateY(120px);opacity:0;transition:transform .36s cubic-bezier(.4,0,.2,1),opacity .36s;border:1px solid rgba(255,255,255,.06);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);}
+    #mini-player{margin-bottom:5px;margin-left:122px;margin-right:128px;bottom:calc(var(--safe-b) + 10px);height:33px;background:var(--mini-bg);border-radius:20px;display:-webkit-flex;display:flex;align-items:center;padding:0 10px;cursor:pointer;z-index:90;box-shadow:var(--sh);transform:translateY(120px);opacity:0;transition:transform .36s cubic-bezier(.4,0,.2,1),opacity .36s;border:1px solid rgba(255,255,255,.06);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);}
     #mini-player.show{transform:translateY(0);opacity:1;}
     .mp-art{width:44px;height:44px;border-radius:11px;-webkit-flex-shrink:0;flex-shrink:0;display:-webkit-flex;display:flex;align-items:center;justify-content:center;margin-right:10px;}
     .mp-info{-webkit-flex:1;flex:1;min-width:0;}
-    .mp-name{font-size:14px;font-weight:600;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .mp-name{font-size:11px;font-weight:600;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
     .mp-artist{font-size:11px;color:rgba(255,255,255,.48);margin-top:1px;}
     .mp-btn{background:transparent;border:none;padding:8px;color:rgba(255,255,255,.65);display:-webkit-flex;display:flex;align-items:center;}
     .mp-play{background:var(--acc);border:none;border-radius:50%;width:36px;height:36px;display:-webkit-flex;display:flex;align-items:center;justify-content:center;-webkit-flex-shrink:0;flex-shrink:0;transition:transform .12s;}
