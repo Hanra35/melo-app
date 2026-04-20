@@ -126,7 +126,7 @@
     .artd-section{font-size:16px;font-weight:700;padding:14px 0 8px;color:var(--text);}
 
     /* FIX 3: Mini-player hidden in player screen */
-    #mini-player{position:fixed;bottom:calc(var(--nav-h)+var(--safe-b)+8px);left:99px;right:106px;height:var(--mini-h);background:var(--mini-bg);border-radius:20px;display:flex;align-items:center;padding:0 10px;cursor:pointer;z-index:90;box-shadow:var(--sh);transform:translateY(200px);opacity:0;transition:transform .36s cubic-bezier(.4,0,.2,1),opacity .36s;border:1px solid rgba(255,255,255,.06);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);}
+    #mini-player{position:fixed;bottom:calc(var(--nav-h)+var(--safe-b)+8px);left:14px;right:14px;height:var(--mini-h);background:var(--mini-bg);border-radius:20px;display:flex;align-items:center;padding:0 10px;cursor:pointer;z-index:90;box-shadow:var(--sh);transform:translateY(200px);opacity:0;transition:transform .36s cubic-bezier(.4,0,.2,1),opacity .36s;border:1px solid rgba(255,255,255,.06);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);}
     #mini-player.show{transform:translateY(0);opacity:1;}
     #mini-player.hidden-in-player{transform:translateY(200px)!important;opacity:0!important;pointer-events:none!important;}
     .mp-art{width:44px;height:44px;border-radius:11px;flex-shrink:0;display:flex;align-items:center;justify-content:center;margin-right:10px;}
@@ -526,7 +526,10 @@ function closePlayer(){
   if(cur!==null) document.getElementById('mini-player').classList.remove('hidden-in-player');
 }
 
-function gotoNav(name){Object.keys(SCREENS).forEach(n=>{var el=document.getElementById(SCREENS[n]);if(!el) return;if(n===name){el.classList.remove('hidden','slide-left');}else{el.classList.remove('slide-left');el.classList.add('hidden');}});activeScreen=name;['home','playlists','artists','import'].forEach(n=>{var item=document.getElementById('nav-'+n);if(!item) return;item.classList.toggle('active',n===name);});if(name==='home') renderHome();if(name==='playlists') renderPlScreen();if(name==='artists') renderArtists();}
+function gotoNav(name){
+  /* FIX: Si on quitte le player via la nav, restaurer le mini-player */
+  if(cur!==null) document.getElementById('mini-player').classList.remove('hidden-in-player');
+  Object.keys(SCREENS).forEach(n=>{var el=document.getElementById(SCREENS[n]);if(!el) return;if(n===name){el.classList.remove('hidden','slide-left');}else{el.classList.remove('slide-left');el.classList.add('hidden');}});activeScreen=name;['home','playlists','artists','import'].forEach(n=>{var item=document.getElementById('nav-'+n);if(!item) return;item.classList.toggle('active',n===name);});if(name==='home') renderHome();if(name==='playlists') renderPlScreen();if(name==='artists') renderArtists();}
 
 /* CACHE */
 function isCached(id){return blobCache.has(id);}
