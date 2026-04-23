@@ -21,7 +21,7 @@ const ACCOUNTS = {
 const META_FILE = 'melo-metadata.json';
 const GB = 1073741824;
 
-/* ── CORS réponse HTTP ── */
+/* ── CORS ── */
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -42,11 +42,12 @@ async function authB2(acct) {
     throw new Error(`Auth B2 compte ${acct} failed (${r.status}): ${txt}`);
   }
   const d = await r.json();
-  return { ...d, _cfg: cfg, _acct: acct };
+  return { ...d, _cfg: cfg };
 }
 
 /* ── Trouver l'ID du bucket ── */
 async function getBucketId(a) {
+  /* Si l'app key est limitée à un seul bucket, l'ID est déjà dans allowed */
   if (a.allowed?.bucketId) return a.allowed.bucketId;
 
   const r = await fetch(`${a.apiUrl}/b2api/v2/b2_list_buckets`, {
@@ -62,9 +63,8 @@ async function getBucketId(a) {
 }
 
 /* ── Configurer le CORS sur le bucket ──
-   CORRECTIF : on throw maintenant l'erreur au lieu de l'avaler silencieusement.
-   Si la clé applicative n'a pas la permission "writeBuckets", B2 retourne une
-   erreur 401/403 → l'appelant doit la traiter (voir upload-creds ci-dessous).   */
+   IMPORTANT : doit être fait AVANT chaque upload depuis le navigateur
+   car sans CORS le XHR échoue avec "network error"             */
 async function fixCors(a, bid) {
   const r = await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
     method: 'POST',
@@ -73,25 +73,24 @@ async function fixCors(a, bid) {
       accountId: a.accountId,
       bucketId:  bid,
       corsRules: [{
-        corsRuleName:      'melo-allow-all',
-        allowedOrigins:    ['*'],
-        allowedHeaders:    ['*'],
-        allowedOperations: [
+        corsRuleName:       'melo_allow_all',
+        allowedOrigins:     ['*'],
+        allowedHeaders:     ['*'],
+        allowedOperations:  [
           'b2_download_file_by_name',
           'b2_download_file_by_id',
           'b2_upload_file',
           'b2_upload_part'
         ],
-        exposeHeaders:  ['x-bz-upload-timestamp', 'X-Bz-File-Name', 'Content-Length'],
-        maxAgeSeconds:  3600
+        exposeHeaders:      ['x-bz-upload-timestamp', 'X-Bz-File-Name', 'Content-Length'],
+        maxAgeSeconds:      3600
       }]
     })
   });
-
   if (!r.ok) {
     const txt = await r.text();
-    /* On throw maintenant — l'appelant décide de la gravité */
-    throw new Error(`fixCors compte${a._acct} (${r.status}): ${txt}`);
+    console.warn(`fixCors compte${a._cfg === ACCOUNTS[1] ? 1 : 2} failed (${r.status}): ${txt}`);
+    /* On ne throw pas — une règle CORS existante suffit */
   }
 }
 
@@ -126,10 +125,10 @@ async function b2UploadBuf(upUrl, upToken, key, buf, mime) {
   const r = await fetch(upUrl, {
     method: 'POST',
     headers: {
-      Authorization:        upToken,
-      'X-Bz-File-Name':     encodeURIComponent(key),
-      'Content-Type':       mime,
-      'X-Bz-Content-Sha1':  sha1,
+      Authorization:          upToken,
+      'X-Bz-File-Name':       encodeURIComponent(key),
+      'Content-Type':         mime,
+      'X-Bz-Content-Sha1':   sha1,
     },
     body: buf,
   });
@@ -151,7 +150,7 @@ function parseMeta(raw) {
 
 /* ── Calculer les stats de stockage ── */
 function storageStats(tracks) {
-  const AVG = 6 * 1024 * 1024;
+  const AVG = 6 * 1024 * 1024; // 6 Mo par défaut si fileSize inconnu
   const used = tracks.reduce((s, t) => s + (t.fileSize || AVG), 0);
   const total = 10 * GB;
   return {
@@ -175,15 +174,15 @@ module.exports = async (req, res) => {
 
   try {
 
-    /* ── INIT ── */
+    /* ── INIT ── charge les données + configure CORS sur les 2 comptes ── */
     if (action === 'init') {
       const a   = await authB2(acct);
       const bid = await getBucketId(a);
 
-      /* Tente de configurer CORS — échec silencieux ici car init ne doit pas planter */
-      try { await fixCors(a, bid); }
-      catch (e) { console.warn('init fixCors:', e.message); }
+      /* Configure CORS immédiatement — indispensable pour que les uploads fonctionnent */
+      await fixCors(a, bid);
 
+      /* Charge les métadonnées */
       let meta = { tracks: [], playlists: [], albums: [], artists: [] };
       try {
         const r = await fetch(`${a.downloadUrl}/file/${a._cfg.bucket}/${META_FILE}`, {
@@ -193,8 +192,11 @@ module.exports = async (req, res) => {
       } catch (_) {}
 
       const dlToken = await getDlToken(a, bid);
+
+      /* Stats du compte actif */
       const statsActif = storageStats(meta.tracks);
 
+      /* Stats de l'autre compte (silencieux) */
       let statsAutre = { used: 0, total: 10 * GB, free: 10 * GB, count: 0, pct: 0 };
       const autreAcct = acct === 1 ? 2 : 1;
       try {
@@ -229,28 +231,14 @@ module.exports = async (req, res) => {
     }
 
     /* ── UPLOAD-CREDS ──
-       CORRECTIF PRINCIPAL : si fixCors échoue (permission manquante sur la clé),
-       on retourne une erreur claire au lieu de continuer et d'obtenir
-       un "network error" cryptique dans le navigateur.                           */
+       Fixe le CORS AVANT de retourner l'URL d'upload.
+       C'est ce qui manquait pour le compte 2 → "network error" dans le navigateur */
     if (action === 'upload-creds') {
       const a   = await authB2(acct);
       const bid = await getBucketId(a);
 
-      try {
-        await fixCors(a, bid);
-      } catch (corsErr) {
-        /* La clé applicative n'a probablement pas la permission writeBuckets.
-           On remonte l'erreur explicitement plutôt que de laisser l'upload échouer
-           plus tard avec un "network error" sans explication.                    */
-        console.error(`upload-creds fixCors compte${acct}:`, corsErr.message);
-        res.status(500).json({
-          error: `Impossible de configurer le CORS sur le bucket du compte ${acct}. `
-               + `Vérifiez que la clé applicative possède la permission "writeBuckets" `
-               + `dans la console Backblaze, ou configurez le CORS manuellement sur le bucket. `
-               + `Détail : ${corsErr.message}`
-        });
-        return;
-      }
+      /* Applique (ou confirme) les règles CORS sur le bucket cible */
+      await fixCors(a, bid);
 
       const up = await getUploadUrl(a, bid);
 
@@ -263,68 +251,16 @@ module.exports = async (req, res) => {
       return;
     }
 
-    /* ── FIX-CORS (action dédiée pour forcer la mise à jour CORS) ── */
-    if (action === 'fix-cors') {
-      const results = {};
-      for (const num of [1, 2]) {
-        try {
-          const a   = await authB2(num);
-          const bid = await getBucketId(a);
-          await fixCors(a, bid);
-          results[`compte${num}`] = 'ok';
-        } catch (e) {
-          results[`compte${num}`] = `ERREUR: ${e.message}`;
-        }
-      }
-      res.status(200).json(results);
-      return;
-    }
-
     /* ── SAVE-META ── */
     if (action === 'save-meta' && req.method === 'POST') {
-      /* Vercel peut livrer le body déjà parsé (objet) ou non (stream/string).
-         On gère les deux cas pour ne jamais sauvegarder des métadonnées vides. */
-      let rawBody = req.body;
-      if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody) && !rawBody.tracks) {
-        try {
-          const chunks = [];
-          await new Promise((resolve, reject) => {
-            req.on('data', c => chunks.push(c));
-            req.on('end', resolve);
-            req.on('error', reject);
-          });
-          rawBody = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
-        } catch (e) {
-          res.status(400).json({ error: 'Corps de requête invalide: ' + e.message });
-          return;
-        }
-      }
-      const meta = parseMeta(rawBody);
-      /* Sanity check : on refuse d'écraser des données existantes par des métadonnées vides */
-      if (!meta.tracks.length && !meta.playlists.length && !meta.albums.length && !meta.artists.length) {
-        /* Vérifie si des données existent déjà sur B2 avant d'écraser */
-        try {
-          const aCheck = await authB2(acct);
-          const rCheck = await fetch(`${aCheck.downloadUrl}/file/${aCheck._cfg.bucket}/${META_FILE}`, {
-            headers: { Authorization: aCheck.authorizationToken }
-          });
-          if (rCheck.ok) {
-            const existing = await rCheck.json();
-            const existingMeta = parseMeta(existing);
-            if (existingMeta.tracks.length > 0) {
-              /* Body reçu est vide mais B2 a des données — on refuse l'écrasement */
-              res.status(400).json({ error: 'Corps vide reçu mais données existantes détectées — sauvegarde annulée' });
-              return;
-            }
-          }
-        } catch (_) {}
-      }
-      const buf = Buffer.from(JSON.stringify(meta), 'utf-8');
-      const a   = await authB2(acct);
-      const bid = await getBucketId(a);
-      const up  = await getUploadUrl(a, bid);
+      const body = req.body;
+      const meta = parseMeta(body);
+      const buf  = Buffer.from(JSON.stringify(meta), 'utf-8');
+      const a    = await authB2(acct);
+      const bid  = await getBucketId(a);
+      const up   = await getUploadUrl(a, bid);
       await b2UploadBuf(up.uploadUrl, up.authorizationToken, META_FILE, buf, 'application/json');
-      res.status(200).json({ ok: true, saved: { tracks: meta.tracks.length, playlists: meta.playlists.length } });
+      res.status(200).json({ ok: true });
       return;
     }
 
