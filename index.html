@@ -615,7 +615,7 @@ async function switchAccount(n){
   queueIds=null;currentPl=null;currentAlbum=null;currentArtist=null;
   /* Sauvegarde l'état courant pour restauration en cas d'erreur */
   const prevAccount=activeAccount;
-  const prevState={tracks,playlists,albums,artists,dlUrl,dlToken,bucketName};
+  const prevState={tracks:[...tracks],playlists:[...playlists],albums:[...albums],artists:[...artists],dlUrl,dlToken,bucketName};
   activeAccount=n;
   updateAcctUI();
   document.getElementById('ldmsg').textContent='Chargement du compte '+n+'...';
@@ -628,7 +628,8 @@ async function switchAccount(n){
     notify('Compte '+n+' chargé ✓');
   }catch(e){
     /* Restaure intégralement l'état du compte précédent */
-    ({tracks,playlists,albums,artists,dlUrl,dlToken,bucketName}=prevState);
+    ({dlUrl,dlToken,bucketName}=prevState);
+    tracks=prevState.tracks;playlists=prevState.playlists;albums=prevState.albums;artists=prevState.artists;
     activeAccount=prevAccount;
     updateAcctUI();
     document.getElementById('loading').style.display='none';
@@ -667,7 +668,24 @@ async function loadAccount(n){
   bucketName= d.bucketName;
   if(d.stats1) stats1=d.stats1;
   if(d.stats2) stats2=d.stats2;
-  /* Met à jour les stats dans Options */
+  /* Si B2 renvoie des données vides, on tente le fallback localStorage */
+  if(!tracks.length && !playlists.length){
+    try{
+      const cached=localStorage.getItem('melo_meta_'+n);
+      if(cached){
+        const m=JSON.parse(cached);
+        if(Array.isArray(m.tracks)&&m.tracks.length){
+          tracks    = m.tracks;
+          playlists = Array.isArray(m.playlists)?m.playlists:[];
+          albums    = Array.isArray(m.albums)?m.albums:[];
+          artists   = Array.isArray(m.artists)?m.artists:[];
+          notify('⚠️ Données chargées depuis le cache local (compte '+n+')');
+          /* Tente de resynchroniser B2 avec les données du cache */
+          saveMeta();
+        }
+      }
+    }catch(_){}
+  }
   updateOptStats();
 }
 
@@ -714,10 +732,23 @@ const rawUrl=key=>`${dlUrl}/file/${encodeURIComponent(bucketName)}/${encodeURICo
 
 /* ════ SAVE META ════ */
 async function saveMeta(){
+  const payload={tracks,playlists,albums,artists};
+  /* Backup local immédiat — si B2 échoue, les données sont préservées */
+  try{localStorage.setItem('melo_meta_'+activeAccount,JSON.stringify(payload));}catch(_){}
   try{
-    const r=await fetch(API+'?action=save-meta&account='+activeAccount,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tracks,playlists,albums,artists})});
-    if(!r.ok)notify('⚠️ Erreur sauvegarde métadonnées compte '+activeAccount);
-  }catch(e){notify('⚠️ Sauvegarde échouée: '+e.message.slice(0,40));console.error(e);}
+    const r=await fetch(API+'?action=save-meta&account='+activeAccount,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)
+    });
+    if(!r.ok){
+      const err=await r.json().catch(()=>({}));
+      console.error('saveMeta erreur',r.status,err);
+      notify('⚠️ Sauvegarde B2 échouée — données conservées en local');
+    }
+  }catch(e){
+    console.error('saveMeta',e);
+    notify('⚠️ Sauvegarde échouée (réseau) — données conservées en local');
+  }
 }
 
 /* ════ STORAGE PAGE ════ */
