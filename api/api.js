@@ -68,56 +68,48 @@ async function getBucketId(a) {
 /* ── Configurer le CORS sur le bucket ──
    IMPORTANT : doit être fait AVANT chaque upload depuis le navigateur
    car sans CORS le XHR échoue avec "network error"             */
+/* ── Correction du CORS pour le Compte 2 ── */
 async function fixCors(a, bid) {
-  let bucketType = 'allPrivate'; // Type par défaut
-
-  // Étape 1 : Récupérer le type actuel du bucket (paramètre exigé par Backblaze)
   try {
-    const rList = await fetch(`${a.apiUrl}/b2api/v2/b2_list_buckets`, {
+    // 1. On récupère d'abord les infos du bucket pour avoir le "bucketType" (obligatoire)
+    const rInfo = await fetch(`${a.apiUrl}/b2api/v2/b2_list_buckets`, {
       method: 'POST',
       headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
       body: JSON.stringify({ accountId: a.accountId, bucketId: bid })
     });
-    if (rList.ok) {
-      const dList = await rList.json();
-      if (dList.buckets && dList.buckets.length > 0) {
-        bucketType = dList.buckets[0].bucketType;
-      }
+    
+    const dInfo = await rInfo.json();
+    const bType = (dInfo.buckets && dInfo.buckets[0]) ? dInfo.buckets[0].bucketType : 'allPrivate';
+
+    // 2. On applique les règles CORS
+    const r = await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
+      method: 'POST',
+      headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountId: a.accountId,
+        bucketId: bid,
+        bucketType: bType, // <--- Correctif essentiel
+        corsRules: [{
+          corsRuleName: 'melo-cors',
+          allowedOrigins: ['*'],
+          allowedHeaders: ['*'],
+          allowedOperations: ['b2_download_file_by_name', 'b2_download_file_by_id', 'b2_upload_file', 'b2_upload_part'],
+          exposeHeaders: ['x-bz-upload-timestamp', 'Content-Length'],
+          maxAgeSeconds: 3600
+        }]
+      })
+    });
+
+    if (r.ok) {
+      console.log(`✅ CORS configuré avec succès pour le compte ${a._cfg === ACCOUNTS[1] ? 1 : 2}`);
+    } else {
+      const err = await r.text();
+      console.warn("Erreur fixCors:", err);
     }
   } catch (e) {
-    console.warn('Impossible de récupérer le bucketType, utilisation de allPrivate par défaut.');
-  }
-
-  // Étape 2 : Mettre à jour les règles CORS avec le paramètre manquant
-  const r = await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
-    method: 'POST',
-    headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      accountId: a.accountId,
-      bucketId:  bid,
-      bucketType: bucketType, // <--- LA CORRECTION EST ICI
-      corsRules: [{
-        corsRuleName:       'melo_allow_all',
-        allowedOrigins:     ['*'],
-        allowedHeaders:     ['*'],
-        allowedOperations:  [
-          'b2_download_file_by_name',
-          'b2_download_file_by_id',
-          'b2_upload_file',
-          'b2_upload_part'
-        ],
-        exposeHeaders:      ['x-bz-upload-timestamp', 'X-Bz-File-Name', 'Content-Length'],
-        maxAgeSeconds:      3600
-      }]
-    })
-  });
-
-  if (!r.ok) {
-    const txt = await r.text();
-    console.warn(`fixCors compte${a._cfg === ACCOUNTS[1] ? 1 : 2} failed (${r.status}): ${txt}`);
+    console.error("Erreur critique fixCors:", e);
   }
 }
-
 /* ── Obtenir l'URL d'upload ── */
 async function getUploadUrl(a, bid) {
   const r = await fetch(`${a.apiUrl}/b2api/v2/b2_get_upload_url`, {
