@@ -65,13 +65,37 @@ async function getBucketId(a) {
 /* ── Configurer le CORS sur le bucket ──
    IMPORTANT : doit être fait AVANT chaque upload depuis le navigateur
    car sans CORS le XHR échoue avec "network error"             */
+/* ── Configurer le CORS sur le bucket ──
+   IMPORTANT : doit être fait AVANT chaque upload depuis le navigateur
+   car sans CORS le XHR échoue avec "network error"             */
 async function fixCors(a, bid) {
+  let bucketType = 'allPrivate'; // Type par défaut
+
+  // Étape 1 : Récupérer le type actuel du bucket (paramètre exigé par Backblaze)
+  try {
+    const rList = await fetch(`${a.apiUrl}/b2api/v2/b2_list_buckets`, {
+      method: 'POST',
+      headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId: a.accountId, bucketId: bid })
+    });
+    if (rList.ok) {
+      const dList = await rList.json();
+      if (dList.buckets && dList.buckets.length > 0) {
+        bucketType = dList.buckets[0].bucketType;
+      }
+    }
+  } catch (e) {
+    console.warn('Impossible de récupérer le bucketType, utilisation de allPrivate par défaut.');
+  }
+
+  // Étape 2 : Mettre à jour les règles CORS avec le paramètre manquant
   const r = await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
     method: 'POST',
     headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       accountId: a.accountId,
       bucketId:  bid,
+      bucketType: bucketType, // <--- LA CORRECTION EST ICI
       corsRules: [{
         corsRuleName:       'melo_allow_all',
         allowedOrigins:     ['*'],
@@ -87,10 +111,10 @@ async function fixCors(a, bid) {
       }]
     })
   });
+
   if (!r.ok) {
     const txt = await r.text();
     console.warn(`fixCors compte${a._cfg === ACCOUNTS[1] ? 1 : 2} failed (${r.status}): ${txt}`);
-    /* On ne throw pas — une règle CORS existante suffit */
   }
 }
 
