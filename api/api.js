@@ -282,14 +282,49 @@ module.exports = async (req, res) => {
 
     /* ── SAVE-META ── */
     if (action === 'save-meta' && req.method === 'POST') {
-      const body = req.body;
-      const meta = parseMeta(body);
-      const buf  = Buffer.from(JSON.stringify(meta), 'utf-8');
-      const a    = await authB2(acct);
-      const bid  = await getBucketId(a);
-      const up   = await getUploadUrl(a, bid);
+      /* Vercel peut livrer le body déjà parsé (objet) ou non (stream/string).
+         On gère les deux cas pour ne jamais sauvegarder des métadonnées vides. */
+      let rawBody = req.body;
+      if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody) && !rawBody.tracks) {
+        try {
+          const chunks = [];
+          await new Promise((resolve, reject) => {
+            req.on('data', c => chunks.push(c));
+            req.on('end', resolve);
+            req.on('error', reject);
+          });
+          rawBody = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+        } catch (e) {
+          res.status(400).json({ error: 'Corps de requête invalide: ' + e.message });
+          return;
+        }
+      }
+      const meta = parseMeta(rawBody);
+      /* Sanity check : on refuse d'écraser des données existantes par des métadonnées vides */
+      if (!meta.tracks.length && !meta.playlists.length && !meta.albums.length && !meta.artists.length) {
+        /* Vérifie si des données existent déjà sur B2 avant d'écraser */
+        try {
+          const aCheck = await authB2(acct);
+          const rCheck = await fetch(`${aCheck.downloadUrl}/file/${aCheck._cfg.bucket}/${META_FILE}`, {
+            headers: { Authorization: aCheck.authorizationToken }
+          });
+          if (rCheck.ok) {
+            const existing = await rCheck.json();
+            const existingMeta = parseMeta(existing);
+            if (existingMeta.tracks.length > 0) {
+              /* Body reçu est vide mais B2 a des données — on refuse l'écrasement */
+              res.status(400).json({ error: 'Corps vide reçu mais données existantes détectées — sauvegarde annulée' });
+              return;
+            }
+          }
+        } catch (_) {}
+      }
+      const buf = Buffer.from(JSON.stringify(meta), 'utf-8');
+      const a   = await authB2(acct);
+      const bid = await getBucketId(a);
+      const up  = await getUploadUrl(a, bid);
       await b2UploadBuf(up.uploadUrl, up.authorizationToken, META_FILE, buf, 'application/json');
-      res.status(200).json({ ok: true });
+      res.status(200).json({ ok: true, saved: { tracks: meta.tracks.length, playlists: meta.playlists.length } });
       return;
     }
 
