@@ -917,7 +917,8 @@ async function uploadFile(file){
   ul.prepend(item);
   const setP=p=>{const pe=document.getElementById('pct-'+id),be=document.getElementById('bar-'+id);if(pe)pe.textContent=p+'%';if(be)be.style.width=p+'%';};
   try{
-    const cr=await fetch(API+'?action=upload-creds&account='+activeAccount);if(!cr.ok)throw new Error('Credentials indisponibles');
+    const cr=await fetch(API+'?action=upload-creds&account='+activeAccount);
+    if(!cr.ok){const errData=await cr.json().catch(()=>({}));throw new Error(errData.error||'Credentials indisponibles');}
     const creds=await cr.json();
     const buf=await file.arrayBuffer();
     const hash=await crypto.subtle.digest('SHA-1',buf);
