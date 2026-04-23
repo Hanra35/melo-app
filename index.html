@@ -613,15 +613,24 @@ async function switchAccount(n){
   /* Stoppe la lecture si on change de compte */
   if(isPlaying){aud.pause();isPlaying=false;cur=null;updateMiniPlayer();}
   queueIds=null;currentPl=null;currentAlbum=null;currentArtist=null;
+  const prevAccount=activeAccount;
   activeAccount=n;
   updateAcctUI();
   /* Recharge les données du nouveau compte */
   document.getElementById('ldmsg').textContent='Chargement du compte '+n+'...';
   document.getElementById('loading').style.display='flex';
-  await loadAccount(n);
-  document.getElementById('loading').style.display='none';
-  renderHome();
-  notify('Compte '+n+' chargé ✓');
+  try{
+    await loadAccount(n);
+    document.getElementById('loading').style.display='none';
+    renderHome();
+    notify('Compte '+n+' chargé ✓');
+  }catch(e){
+    /* En cas d'erreur : masque le chargement et revient au compte précédent */
+    document.getElementById('loading').style.display='none';
+    activeAccount=prevAccount;
+    updateAcctUI();
+    notify('❌ Compte '+n+' : '+e.message.slice(0,60),4000);
+  }
 }
 
 function updateAcctUI(){
