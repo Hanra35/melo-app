@@ -610,25 +610,29 @@ function setDataSave(v){
 /* ════ ACCOUNT SWITCHING ════ */
 async function switchAccount(n){
   if(n===activeAccount) return;
-  /* Stoppe la lecture si on change de compte */
+  /* Stoppe la lecture */
   if(isPlaying){aud.pause();isPlaying=false;cur=null;updateMiniPlayer();}
   queueIds=null;currentPl=null;currentAlbum=null;currentArtist=null;
+  /* Sauvegarde l'état courant pour restauration en cas d'erreur */
   const prevAccount=activeAccount;
+  const prevState={tracks,playlists,albums,artists,dlUrl,dlToken,bucketName};
   activeAccount=n;
   updateAcctUI();
-  /* Recharge les données du nouveau compte */
   document.getElementById('ldmsg').textContent='Chargement du compte '+n+'...';
   document.getElementById('loading').style.display='flex';
   try{
     await loadAccount(n);
+    localStorage.setItem('melo_account',n);
     document.getElementById('loading').style.display='none';
     renderHome();
     notify('Compte '+n+' chargé ✓');
   }catch(e){
-    /* En cas d'erreur : masque le chargement et revient au compte précédent */
-    document.getElementById('loading').style.display='none';
+    /* Restaure intégralement l'état du compte précédent */
+    ({tracks,playlists,albums,artists,dlUrl,dlToken,bucketName}=prevState);
     activeAccount=prevAccount;
     updateAcctUI();
+    document.getElementById('loading').style.display='none';
+    renderHome();
     notify('❌ Compte '+n+' : '+e.message.slice(0,60),4000);
   }
 }
@@ -709,7 +713,12 @@ function switchHomeTab(tab){
 const rawUrl=key=>`${dlUrl}/file/${encodeURIComponent(bucketName)}/${encodeURIComponent(key)}?Authorization=${encodeURIComponent(dlToken)}`;
 
 /* ════ SAVE META ════ */
-async function saveMeta(){try{await fetch(API+'?action=save-meta&account='+activeAccount,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tracks,playlists,albums,artists})});}catch(e){console.error(e);}}
+async function saveMeta(){
+  try{
+    const r=await fetch(API+'?action=save-meta&account='+activeAccount,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tracks,playlists,albums,artists})});
+    if(!r.ok)notify('⚠️ Erreur sauvegarde métadonnées compte '+activeAccount);
+  }catch(e){notify('⚠️ Sauvegarde échouée: '+e.message.slice(0,40));console.error(e);}
+}
 
 /* ════ STORAGE PAGE ════ */
 function renderStoragePage(){
@@ -956,8 +965,10 @@ async function uploadFile(file){
 
 /* INIT */
 async function init(){
+  const savedAccount=parseInt(localStorage.getItem('melo_account'))||1;
+  activeAccount=savedAccount;
   try{
-    await loadAccount(1);
+    await loadAccount(savedAccount);
     document.getElementById('loading').style.display='none';
     updateAcctUI();
     renderHome();
