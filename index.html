@@ -757,7 +757,7 @@ async function playAt(idx){
   if(activeScreen==='cache')renderCachePage();
 }
 
-function rawUrl(key){return `${dlUrl}/file/${encodeURIComponent(bucketName)}/${encodeURIComponent(key)}?Authorization=${encodeURIComponent(dlToken)}`;}
+function rawUrl(key){return `${dlUrl}/file/${bucketName}/${key}?Authorization=${encodeURIComponent(dlToken)}`;}
 
 /* ════ RENDER CACHE PAGE ════ */
 function renderCachePage(){
