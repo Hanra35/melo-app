@@ -586,14 +586,12 @@ var pickerSelected=[], pickerTarget=null, pickerType=null;
 var qDragItems=[];
 var stats1=null, stats2=null;
 
-/* ════ CACHE — DOWNLOAD FIRST, PLAY FROM BLOB ════
-   Quand Play est pressé → télécharge entièrement → blob → lecture
-   Limite : 20 chansons (on expire la plus ancienne si > 20)         */
-const CACHE_MAX = 20;
-const blobCache = new Map();   /* id → blobUrl */
-const cacheOrder = [];         /* FIFO pour l'expiration */
-const cacheSize = new Map();   /* id → octets */
-var isDownloading = false;     /* empêche les double-clics */
+/* ════ CACHE — désactivé, streaming direct ════ */
+const CACHE_MAX = 0;
+const blobCache = new Map();
+const cacheOrder = [];
+const cacheSize = new Map();
+var isDownloading = false;
 
 const aud = document.getElementById('aud');
 aud.volume = volume;
@@ -663,98 +661,22 @@ function updateCacheBadge(){
   if(info)info.textContent=n+' / '+CACHE_MAX+' en cache';
 }
 
-/* ════ TÉLÉCHARGEMENT AVEC PROGRESSION ════ */
-async function downloadTrackWithProgress(t){
-  const url=rawUrl(t.key);
-  const r=await fetch(url);
-  if(!r.ok) throw new Error('Téléchargement échoué ('+r.status+')');
 
-  /* Lecture du corps avec progression si Content-Length disponible */
-  const contentLength=parseInt(r.headers.get('Content-Length')||'0');
-  const reader=r.body.getReader();
-  const chunks=[];
-  let received=0;
-
-  while(true){
-    const {done,value}=await reader.read();
-    if(done) break;
-    chunks.push(value);
-    received+=value.length;
-    if(contentLength>0){
-      const pct=Math.round(received/contentLength*100);
-      setDlProgress(pct);
-    }
-  }
-
-  setDlProgress(100);
-  const blob=new Blob(chunks);
-  return {blob, size:received};
-}
-
-function setDlProgress(pct){
-  /* Mini-player overlay */
-  const mpTxt=document.getElementById('mp-dl-txt');
-  const mpPct=document.getElementById('mp-dl-pct');
-  if(mpPct)mpPct.textContent=pct+'%';
-  if(mpTxt&&tracks[cur])mpTxt.textContent=tracks[cur].name;
-
-  /* Player art overlay */
-  const pdlPct=document.getElementById('pdl-pct');
-  const pdlFill=document.getElementById('pdl-fill');
-  if(pdlPct)pdlPct.textContent=pct+'%';
-  if(pdlFill)pdlFill.style.width=pct+'%';
-}
-
-function showDlUI(show){
-  const mpOv=document.getElementById('mp-dl-overlay');
-  const pdlOv=document.getElementById('player-dl-overlay');
-  if(mpOv)mpOv.classList.toggle('show',show);
-  if(pdlOv)pdlOv.classList.toggle('show',show);
-}
-
-/* ════ PLAY — TÉLÉCHARGE PUIS JOUE DEPUIS LE CACHE ════ */
+/* ════ PLAY — STREAMING DIRECT ════ */
 async function playAt(idx){
-  if(isDownloading) return; /* empêche double-clic pendant DL */
   const t=tracks[idx];
   if(!t||!dlToken) return;
   cur=idx;
 
-  /* Mise à jour immédiate du mini-player et player screen */
-  updateMiniPlayer(false);
-  updatePlayerScreen(false);
-  renderAll();
+  aud.pause();
+  aud.src=rawUrl(t.key);
+  aud.preload='auto';
+  aud.load();
+  aud.play().catch(e=>{notify('❌ Lecture impossible: '+e.message.slice(0,40));cur=null;updateMiniPlayer();});
 
-  if(isCached(t.id)){
-    /* Déjà en cache → lecture immédiate */
-    aud.src=blobCache.get(t.id);
-    aud.preload='auto';
-    aud.load();
-    aud.play().catch(e=>console.error(e));
-  } else {
-    /* Téléchargement complet en premier */
-    isDownloading=true;
-    showDlUI(true);
-    setDlProgress(0);
-    try{
-      const {blob,size}=await downloadTrackWithProgress(t);
-      const blobUrl=URL.createObjectURL(blob);
-      addToCache(t.id,blobUrl,size);
-      aud.src=blobUrl;
-      aud.preload='auto';
-      aud.load();
-      aud.play().catch(e=>console.error(e));
-    }catch(err){
-      notify('❌ '+err.message.slice(0,50));
-      cur=null;
-    }finally{
-      isDownloading=false;
-      showDlUI(false);
-    }
-  }
-  renderAll();
   updateMiniPlayer(false);
   updatePlayerScreen(false);
-  if(activeScreen==='cache')renderCachePage();
+  renderAll();
 }
 
 function rawUrl(key){return `${dlUrl}/file/${bucketName}/${key}?Authorization=${encodeURIComponent(dlToken)}`;}
