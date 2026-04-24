@@ -43,36 +43,6 @@ async function getBucketId(a) {
   return b ? b.bucketId : null;
 }
 
-async function fixCors(a, bid) {
-  try {
-    const rList = await fetch(`${a.apiUrl}/b2api/v2/b2_list_buckets`, {
-      method: 'POST',
-      headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ accountId: a.accountId, bucketId: bid })
-    });
-    const dList = await rList.json();
-    const bType = (dList.buckets && dList.buckets[0]) ? dList.buckets[0].bucketType : 'allPrivate';
-
-    await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
-      method: 'POST',
-      headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        accountId: a.accountId,
-        bucketId: bid,
-        bucketType: bType,
-        corsRules: [{
-          corsRuleName: 'melo-cors',
-          allowedOrigins: ['*'],
-          allowedHeaders: ['authorization', 'content-type', 'x-bz-file-name', 'x-bz-content-sha1'],
-          allowedOperations: ['b2_download_file_by_name', 'b2_download_file_by_id', 'b2_upload_file'],
-          exposeHeaders: ['x-bz-upload-timestamp'],
-          maxAgeSeconds: 3600
-        }]
-      })
-    });
-  } catch (e) { console.error("CORS:", e); }
-}
-
 export default async function handler(req, res) {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -94,7 +64,6 @@ export default async function handler(req, res) {
     if (action === 'upload-auth') {
       const a = await authB2(acct);
       const bid = await getBucketId(a);
-      await fixCors(a, bid);
       const r = await fetch(`${a.apiUrl}/b2api/v2/b2_get_upload_url`, {
         method: 'POST',
         headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
