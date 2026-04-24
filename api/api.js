@@ -28,6 +28,7 @@ async function authB2(acct) {
     headers: { Authorization: `Basic ${auth}` }
   });
   const d = await r.json();
+  if (!r.ok) throw new Error(d.message || 'Auth B2 failed');
   return { ...d, _cfg: cfg };
 }
 
@@ -69,7 +70,7 @@ async function fixCors(a, bid) {
         }]
       })
     });
-  } catch (e) { console.error("CORS Error:", e); }
+  } catch (e) { console.error("CORS:", e); }
 }
 
 export default async function handler(req, res) {
@@ -81,14 +82,13 @@ export default async function handler(req, res) {
 
     if (action === 'auth') {
       const a = await authB2(acct);
-      res.status(200).json({
+      return res.status(200).json({
         authorizationToken: a.authorizationToken,
         apiUrl: a.apiUrl,
         downloadUrl: a.downloadUrl,
         accountId: a.accountId,
         bucketName: a._cfg.bucket
       });
-      return;
     }
 
     if (action === 'upload-auth') {
@@ -101,17 +101,16 @@ export default async function handler(req, res) {
         body: JSON.stringify({ bucketId: bid })
       });
       const d = await r.json();
-      res.status(200).json({
+      return res.status(200).json({
         uploadUrl: d.uploadUrl,
-        uploadToken: d.authorizationToken, // Important: on le nomme uploadToken
+        uploadToken: d.authorizationToken,
         downloadUrl: a.downloadUrl
       });
-      return;
     }
 
-    res.status(400).json({ error: 'Action inconnue' });
+    return res.status(400).json({ error: 'Action inconnue' });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 }
