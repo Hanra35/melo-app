@@ -128,6 +128,19 @@ function storageStats(tracks) {
            pct: Math.min(100, Math.round(used / total * 100)) };
 }
 
+/* ── BODY PARSER — sécurité : Vercel ne parse pas toujours req.body ── */
+async function readBody(req) {
+  if (req.body && typeof req.body === 'object') return req.body;
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', chunk => data += chunk.toString());
+    req.on('end', () => {
+      try { resolve(JSON.parse(data)); } catch (_) { resolve({}); }
+    });
+    req.on('error', () => resolve({}));
+  });
+}
+
 module.exports = async (req, res) => {
   setCors(res);
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
@@ -207,7 +220,8 @@ module.exports = async (req, res) => {
 
     /* ── SAVE-META ── */
     if (action === 'save-meta' && req.method === 'POST') {
-      const meta = parseMeta(req.body);
+      const rawBody = await readBody(req);
+      const meta = parseMeta(rawBody);
       const buf  = Buffer.from(JSON.stringify(meta), 'utf-8');
       const a    = await authB2(acct);
       const bid  = await getBucketId(a);
