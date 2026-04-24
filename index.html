@@ -1038,7 +1038,7 @@ async function uploadFile(file){
     const sha1=Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
     const fileId=await new Promise((resolve,reject)=>{
       const xhr=new XMLHttpRequest();xhr.open('POST',creds.uploadUrl);
-      xhr.setRequestHeader('Authorization', auth.uploadToken);
+      xhr.setRequestHeader('Authorization',creds.authorizationToken);
       xhr.setRequestHeader('X-Bz-File-Name',encodeURIComponent(key));
       xhr.setRequestHeader('Content-Type',file.type||'audio/mpeg');
       xhr.setRequestHeader('X-Bz-Content-Sha1',sha1);
