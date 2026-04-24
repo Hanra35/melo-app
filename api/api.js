@@ -1,9 +1,20 @@
 const { createHash } = require('crypto');
 
-const KEY_ID  = '003ec0649a89f090000000001';
-const APP_KEY = 'K003dwNhrjinpVEyi4VKsJxxZmL3LO4';
-const BUCKET  = 'melo-music-2026';
-const META    = 'melo-metadata.json';
+const ACCOUNTS = {
+  1: {
+    keyId:  '003ec0649a89f090000000001',
+    appKey: 'K003dwNhrjinpVEyi4VKsJxxZmL3LO4',
+    bucket: 'melo-music-2026',
+  },
+  2: {
+    keyId:  '005ac1e426dba9b0000000001',
+    appKey: 'K005BBpJA11ponJY7pvKaPK94H4//qQ',
+    bucket: 'melo-music-2-bucket',
+  },
+};
+
+const META_FILE = 'melo-metadata.json';
+const GB = 1073741824;
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -11,12 +22,14 @@ function setCors(res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
 }
 
-async function b2Auth() {
+async function authB2(acct) {
+  const cfg = ACCOUNTS[acct];
   const r = await fetch('https://api.backblazeb2.com/b2api/v2/b2_authorize_account', {
-    headers: { Authorization: 'Basic ' + Buffer.from(`${KEY_ID}:${APP_KEY}`).toString('base64') }
+    headers: { Authorization: 'Basic ' + Buffer.from(`${cfg.keyId}:${cfg.appKey}`).toString('base64') }
   });
-  if (!r.ok) throw new Error('Auth B2 failed: ' + r.status);
-  return r.json();
+  if (!r.ok) throw new Error(`Auth compte ${acct} failed: ${r.status}`);
+  const d = await r.json();
+  return { ...d, _cfg: cfg };
 }
 
 async function getBucketId(a) {
@@ -24,35 +37,40 @@ async function getBucketId(a) {
   const r = await fetch(`${a.apiUrl}/b2api/v2/b2_list_buckets`, {
     method: 'POST',
     headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ accountId: a.accountId, bucketName: BUCKET })
+    body: JSON.stringify({ accountId: a.accountId, bucketName: a._cfg.bucket })
   });
   const d = await r.json();
-  if (!d.buckets?.length) throw new Error('Bucket "' + BUCKET + '" introuvable');
+  if (!d.buckets?.length) throw new Error(`Bucket "${a._cfg.bucket}" introuvable`);
   return d.buckets[0].bucketId;
 }
 
+/* CORS — appliqué systématiquement à chaque requête init et upload-creds
+   Sans ça, le navigateur bloque les téléchargements (ERR_FAILED / CORS error) */
 async function fixCors(a, bid) {
-  await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
-    method: 'POST',
-    headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      accountId: a.accountId,
-      bucketId: bid,
-      corsRules: [{
-        corsRuleName: 'allowAll',
-        allowedOrigins: ['*'],
-        allowedHeaders: ['*'],
-        allowedOperations: [
-          'b2_download_file_by_name',
-          'b2_download_file_by_id',
-          'b2_upload_file',
-          'b2_upload_part'
-        ],
-        exposeHeaders: ['x-bz-upload-timestamp', 'X-Bz-File-Name', 'Content-Length'],
-        maxAgeSeconds: 3600
-      }]
-    })
-  });
+  try {
+    await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
+      method: 'POST',
+      headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountId: a.accountId, bucketId: bid,
+        corsRules: [{
+          corsRuleName: 'melo_allow_all',
+          allowedOrigins: ['*'],
+          allowedHeaders: ['*'],
+          allowedOperations: [
+            'b2_download_file_by_name',
+            'b2_download_file_by_id',
+            'b2_upload_file',
+            'b2_upload_part'
+          ],
+          exposeHeaders: ['Content-Length', 'x-bz-upload-timestamp', 'X-Bz-File-Name'],
+          maxAgeSeconds: 3600
+        }]
+      })
+    });
+  } catch (e) {
+    console.warn('fixCors warning:', e.message);
+  }
 }
 
 async function getUploadUrl(a, bid) {
@@ -61,84 +79,140 @@ async function getUploadUrl(a, bid) {
     headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
     body: JSON.stringify({ bucketId: bid })
   });
+  if (!r.ok) throw new Error('getUploadUrl failed: ' + r.status);
   return r.json();
 }
 
-async function b2UploadBuf(upUrl, upToken, key, buf, contentType) {
+async function getDlToken(a, bid) {
+  const r = await fetch(`${a.apiUrl}/b2api/v2/b2_get_download_authorization`, {
+    method: 'POST',
+    headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bucketId: bid, fileNamePrefix: '', validDurationInSeconds: 43200 })
+  });
+  if (!r.ok) return '';
+  return (await r.json()).authorizationToken;
+}
+
+async function b2UploadBuf(upUrl, upToken, key, buf, mime) {
   const sha1 = createHash('sha1').update(buf).digest('hex');
   const r = await fetch(upUrl, {
     method: 'POST',
     headers: {
       Authorization: upToken,
       'X-Bz-File-Name': encodeURIComponent(key),
-      'Content-Type': contentType,
+      'Content-Type': mime,
       'X-Bz-Content-Sha1': sha1,
     },
     body: buf,
   });
-  if (!r.ok) throw new Error('B2 upload failed: ' + await r.text());
+  if (!r.ok) throw new Error('Upload failed: ' + await r.text());
   return r.json();
+}
+
+function parseMeta(raw) {
+  if (!raw) return { tracks: [], playlists: [], albums: [], artists: [] };
+  if (Array.isArray(raw)) return { tracks: raw, playlists: [], albums: [], artists: [] };
+  return {
+    tracks:    Array.isArray(raw.tracks)    ? raw.tracks    : [],
+    playlists: Array.isArray(raw.playlists) ? raw.playlists : [],
+    albums:    Array.isArray(raw.albums)    ? raw.albums    : [],
+    artists:   Array.isArray(raw.artists)   ? raw.artists   : [],
+  };
+}
+
+function storageStats(tracks) {
+  const AVG = 6 * 1024 * 1024;
+  const used = tracks.reduce((s, t) => s + (t.fileSize || AVG), 0);
+  const total = 10 * GB;
+  return { used, total, free: Math.max(0, total - used), count: tracks.length,
+           pct: Math.min(100, Math.round(used / total * 100)) };
 }
 
 module.exports = async (req, res) => {
   setCors(res);
-
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
 
-  const action = req.query?.action;
+  const { action, account: acctParam } = req.query;
+  const acct = parseInt(acctParam) === 2 ? 2 : 1;
 
   try {
-    const a   = await b2Auth();
-    const bid = await getBucketId(a);
 
     /* ── INIT ── */
     if (action === 'init') {
+      const a   = await authB2(acct);
+      const bid = await getBucketId(a);
+
+      /* Applique CORS — indispensable pour que les lectures depuis le navigateur fonctionnent */
       await fixCors(a, bid);
 
-      let tracks = [], playlists = [];
+      let meta = { tracks: [], playlists: [], albums: [], artists: [] };
       try {
-        const r = await fetch(`${a.downloadUrl}/file/${BUCKET}/${META}`, {
+        const r = await fetch(`${a.downloadUrl}/file/${a._cfg.bucket}/${META_FILE}`, {
           headers: { Authorization: a.authorizationToken }
         });
-        if (r.ok) {
-          const parsed = await r.json();
-          /* Compatibilité : ancien format = tableau brut, nouveau = {tracks, playlists} */
-          if (Array.isArray(parsed)) {
-            tracks = parsed;
-          } else {
-            tracks    = Array.isArray(parsed.tracks)    ? parsed.tracks    : [];
-            playlists = Array.isArray(parsed.playlists) ? parsed.playlists : [];
-          }
-        }
+        if (r.ok) meta = parseMeta(await r.json());
       } catch (_) {}
 
-      const dlR = await fetch(`${a.apiUrl}/b2api/v2/b2_get_download_authorization`, {
-        method: 'POST',
-        headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bucketId: bid, fileNamePrefix: '', validDurationInSeconds: 43200 })
-      });
-      const dlAuth = await dlR.json();
+      const dlToken = await getDlToken(a, bid);
 
-      res.status(200).json({ tracks, playlists, downloadUrl: a.downloadUrl, downloadToken: dlAuth.authorizationToken });
+      /* Stats de l'autre compte en parallèle */
+      let statsAutre = { used: 0, total: 10 * GB, free: 10 * GB, count: 0, pct: 0 };
+      const autreAcct = acct === 1 ? 2 : 1;
+      try {
+        const a2   = await authB2(autreAcct);
+        const bid2 = await getBucketId(a2);
+        let m2 = { tracks: [] };
+        try {
+          const r2 = await fetch(`${a2.downloadUrl}/file/${a2._cfg.bucket}/${META_FILE}`, {
+            headers: { Authorization: a2.authorizationToken }
+          });
+          if (r2.ok) m2 = parseMeta(await r2.json());
+        } catch (_) {}
+        statsAutre = storageStats(m2.tracks);
+      } catch (_) {}
+
+      const statsActif = storageStats(meta.tracks);
+      const stats1 = acct === 1 ? statsActif : statsAutre;
+      const stats2 = acct === 2 ? statsActif : statsAutre;
+
+      res.status(200).json({
+        account: acct,
+        tracks: meta.tracks, playlists: meta.playlists,
+        albums: meta.albums, artists: meta.artists,
+        /* FIX: downloadUrl et bucketName sans aucun encodage supplémentaire
+           Le frontend construira l'URL avec les / non encodés               */
+        downloadUrl:   a.downloadUrl,
+        downloadToken: dlToken,
+        bucketName:    a._cfg.bucket,
+        stats1, stats2,
+      });
       return;
     }
 
     /* ── UPLOAD-CREDS ── */
     if (action === 'upload-creds') {
-      const up = await getUploadUrl(a, bid);
-      res.status(200).json({ uploadUrl: up.uploadUrl, authorizationToken: up.authorizationToken });
+      const a   = await authB2(acct);
+      const bid = await getBucketId(a);
+      /* Fixe CORS avant chaque upload — obligatoire pour le compte 2 */
+      await fixCors(a, bid);
+      const up  = await getUploadUrl(a, bid);
+      res.status(200).json({
+        uploadUrl: up.uploadUrl,
+        authorizationToken: up.authorizationToken,
+        account: acct,
+        bucketName: a._cfg.bucket,
+      });
       return;
     }
 
     /* ── SAVE-META ── */
-    /* Vercel parse automatiquement le JSON — on utilise req.body directement */
     if (action === 'save-meta' && req.method === 'POST') {
-      const body = req.body;
-      const tracks    = Array.isArray(body?.tracks)    ? body.tracks    : (Array.isArray(body) ? body : []);
-      const playlists = Array.isArray(body?.playlists) ? body.playlists : [];
-      const buf = Buffer.from(JSON.stringify({ tracks, playlists }), 'utf-8');
-      const up  = await getUploadUrl(a, bid);
-      await b2UploadBuf(up.uploadUrl, up.authorizationToken, META, buf, 'application/json');
+      const meta = parseMeta(req.body);
+      const buf  = Buffer.from(JSON.stringify(meta), 'utf-8');
+      const a    = await authB2(acct);
+      const bid  = await getBucketId(a);
+      const up   = await getUploadUrl(a, bid);
+      await b2UploadBuf(up.uploadUrl, up.authorizationToken, META_FILE, buf, 'application/json');
       res.status(200).json({ ok: true });
       return;
     }
@@ -147,6 +221,7 @@ module.exports = async (req, res) => {
     if (action === 'delete') {
       const { key, fileId } = req.query;
       if (key && fileId) {
+        const a = await authB2(acct);
         await fetch(`${a.apiUrl}/b2api/v2/b2_delete_file_version`, {
           method: 'POST',
           headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
@@ -154,6 +229,23 @@ module.exports = async (req, res) => {
         });
       }
       res.status(200).json({ ok: true });
+      return;
+    }
+
+    /* ── STORAGE-STATS ── */
+    if (action === 'storage-stats') {
+      const [a1, a2] = await Promise.all([authB2(1), authB2(2)]);
+      let m1 = { tracks: [] }, m2 = { tracks: [] };
+      try {
+        const [bid1, bid2] = await Promise.all([getBucketId(a1), getBucketId(a2)]);
+        const [r1, r2] = await Promise.all([
+          fetch(`${a1.downloadUrl}/file/${a1._cfg.bucket}/${META_FILE}`, { headers: { Authorization: a1.authorizationToken } }),
+          fetch(`${a2.downloadUrl}/file/${a2._cfg.bucket}/${META_FILE}`, { headers: { Authorization: a2.authorizationToken } }),
+        ]);
+        if (r1.ok) m1 = parseMeta(await r1.json());
+        if (r2.ok) m2 = parseMeta(await r2.json());
+      } catch (_) {}
+      res.status(200).json({ stats1: storageStats(m1.tracks), stats2: storageStats(m2.tracks) });
       return;
     }
 
