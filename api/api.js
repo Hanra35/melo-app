@@ -65,50 +65,60 @@ async function getBucketId(a) {
 /* ── Configurer le CORS sur le bucket ──
    IMPORTANT : doit être fait AVANT chaque upload depuis le navigateur
    car sans CORS le XHR échoue avec "network error"             */
-/* ── Configurer le CORS sur le bucket ──
-   IMPORTANT : doit être fait AVANT chaque upload depuis le navigateur
-   car sans CORS le XHR échoue avec "network error"             */
-/* ── Correction du CORS pour le Compte 2 ── */
+/* ── Correction de fixCors (ligne ~40) ── */
 async function fixCors(a, bid) {
   try {
-    // 1. On récupère d'abord les infos du bucket pour avoir le "bucketType" (obligatoire)
-    const rInfo = await fetch(`${a.apiUrl}/b2api/v2/b2_list_buckets`, {
+    // 1. Récupérer le type de bucket (obligatoire pour b2_update_bucket)
+    const rList = await fetch(`${a.apiUrl}/b2api/v2/b2_list_buckets`, {
       method: 'POST',
       headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
       body: JSON.stringify({ accountId: a.accountId, bucketId: bid })
     });
-    
-    const dInfo = await rInfo.json();
-    const bType = (dInfo.buckets && dInfo.buckets[0]) ? dInfo.buckets[0].bucketType : 'allPrivate';
+    const dList = await rList.json();
+    const bType = (dList.buckets && dList.buckets[0]) ? dList.buckets[0].bucketType : 'allPrivate';
 
-    // 2. On applique les règles CORS
-    const r = await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
+    // 2. Appliquer les règles CORS avec les headers d'autorisation autorisés
+    await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
       method: 'POST',
       headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         accountId: a.accountId,
         bucketId: bid,
-        bucketType: bType, // <--- Correctif essentiel
+        bucketType: bType,
         corsRules: [{
-          corsRuleName: 'melo-cors',
+          corsRuleName: 'melo-cors-rule',
           allowedOrigins: ['*'],
-          allowedHeaders: ['*'],
-          allowedOperations: ['b2_download_file_by_name', 'b2_download_file_by_id', 'b2_upload_file', 'b2_upload_part'],
-          exposeHeaders: ['x-bz-upload-timestamp', 'Content-Length'],
+          allowedHeaders: ['authorization', 'content-type', 'x-bz-content-sha1', 'x-bz-file-name', 'x-bz-upload-timestamp'],
+          allowedOperations: ['b2_download_file_by_name', 'b2_download_file_by_id', 'b2_upload_file'],
+          exposeHeaders: ['x-bz-upload-timestamp', 'content-length'],
           maxAgeSeconds: 3600
         }]
       })
     });
+  } catch (e) { console.error("Erreur CORS automatique:", e); }
+}
 
-    if (r.ok) {
-      console.log(`✅ CORS configuré avec succès pour le compte ${a._cfg === ACCOUNTS[1] ? 1 : 2}`);
-    } else {
-      const err = await r.text();
-      console.warn("Erreur fixCors:", err);
-    }
-  } catch (e) {
-    console.error("Erreur critique fixCors:", e);
-  }
+/* ── Correction du bloc upload-auth (vers la fin du fichier) ── */
+if (action === 'upload-auth') {
+  const a = await authB2(acct);
+  const bid = await getBucketId(a);
+  await fixCors(a, bid); 
+  const r = await fetch(`${a.apiUrl}/b2api/v2/b2_get_upload_url`, {
+    method: 'POST',
+    headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bucketId: bid })
+  });
+  const d = await r.json();
+  
+  // ON NE MODIFIE PAS a.authorizationToken ici pour ne pas casser la lecture
+  res.status(200).json({ 
+    apiUrl: a.apiUrl,
+    downloadUrl: a.downloadUrl,
+    authorizationToken: a.authorizationToken, // Le jeton principal (pour le futur)
+    uploadUrl: d.uploadUrl,
+    uploadToken: d.authorizationToken // On le renomme pour éviter la confusion
+  });
+  return;
 }
 /* ── Obtenir l'URL d'upload ── */
 async function getUploadUrl(a, bid) {
