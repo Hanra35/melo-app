@@ -586,7 +586,7 @@ var pickerSelected=[], pickerTarget=null, pickerType=null;
 var qDragItems=[];
 var stats1=null, stats2=null;
 
-/* ════ CACHE — désactivé, streaming direct ════ */
+/* ════ CACHE — désactivé, streaming direct via proxy Vercel ════ */
 const CACHE_MAX = 0;
 const blobCache = new Map();
 const cacheOrder = [];
@@ -661,25 +661,22 @@ function updateCacheBadge(){
   if(info)info.textContent=n+' / '+CACHE_MAX+' en cache';
 }
 
-
-/* ════ PLAY — STREAMING DIRECT ════ */
+/* ════ PLAY — STREAMING DIRECT VIA PROXY VERCEL ════ */
 async function playAt(idx){
   const t=tracks[idx];
-  if(!t||!dlToken) return;
+  if(!t) return;
   cur=idx;
-
   aud.pause();
   aud.src=rawUrl(t.key);
   aud.preload='auto';
   aud.load();
   aud.play().catch(e=>{notify('❌ Lecture impossible: '+e.message.slice(0,40));cur=null;updateMiniPlayer();});
-
   updateMiniPlayer(false);
   updatePlayerScreen(false);
   renderAll();
 }
 
-function rawUrl(key){return `${dlUrl}/file/${bucketName}/${key}?Authorization=${encodeURIComponent(dlToken)}`;}
+function rawUrl(key){return API+'?action=stream&key='+encodeURIComponent(key)+'&account='+activeAccount;}
 
 /* ════ RENDER CACHE PAGE ════ */
 function renderCachePage(){
