@@ -18,8 +18,24 @@ const GB = 1073741824;
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+}
+
+/* ── BODY PARSER — Vercel ne parse pas toujours req.body automatiquement ──
+   Sans ça, save-meta reçoit undefined → sauvegarde un fichier vide
+   → les tracks du compte 2 disparaissent au rechargement              */
+async function readBody(req) {
+  if (req.body && typeof req.body === 'object') return req.body;
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', chunk => data += chunk.toString());
+    req.on('end', () => {
+      try { resolve(JSON.parse(data)); } catch (_) { resolve({}); }
+    });
+    req.on('error', () => resolve({}));
+  });
 }
 
 async function authB2(acct) {
@@ -44,35 +60,6 @@ async function getBucketId(a) {
   return d.buckets[0].bucketId;
 }
 
-/* CORS — appliqué systématiquement à chaque requête init et upload-creds
-   Sans ça, le navigateur bloque les téléchargements (ERR_FAILED / CORS error) */
-async function fixCors(a, bid) {
-  try {
-    await fetch(`${a.apiUrl}/b2api/v2/b2_update_bucket`, {
-      method: 'POST',
-      headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        accountId: a.accountId, bucketId: bid,
-        corsRules: [{
-          corsRuleName: 'melo_allow_all',
-          allowedOrigins: ['*'],
-          allowedHeaders: ['*'],
-          allowedOperations: [
-            'b2_download_file_by_name',
-            'b2_download_file_by_id',
-            'b2_upload_file',
-            'b2_upload_part'
-          ],
-          exposeHeaders: ['Content-Length', 'x-bz-upload-timestamp', 'X-Bz-File-Name'],
-          maxAgeSeconds: 3600
-        }]
-      })
-    });
-  } catch (e) {
-    console.warn('fixCors warning:', e.message);
-  }
-}
-
 async function getUploadUrl(a, bid) {
   const r = await fetch(`${a.apiUrl}/b2api/v2/b2_get_upload_url`, {
     method: 'POST',
@@ -81,16 +68,6 @@ async function getUploadUrl(a, bid) {
   });
   if (!r.ok) throw new Error('getUploadUrl failed: ' + r.status);
   return r.json();
-}
-
-async function getDlToken(a, bid) {
-  const r = await fetch(`${a.apiUrl}/b2api/v2/b2_get_download_authorization`, {
-    method: 'POST',
-    headers: { Authorization: a.authorizationToken, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ bucketId: bid, fileNamePrefix: '', validDurationInSeconds: 43200 })
-  });
-  if (!r.ok) return '';
-  return (await r.json()).authorizationToken;
 }
 
 async function b2UploadBuf(upUrl, upToken, key, buf, mime) {
@@ -128,19 +105,6 @@ function storageStats(tracks) {
            pct: Math.min(100, Math.round(used / total * 100)) };
 }
 
-/* ── BODY PARSER — sécurité : Vercel ne parse pas toujours req.body ── */
-async function readBody(req) {
-  if (req.body && typeof req.body === 'object') return req.body;
-  return new Promise((resolve) => {
-    let data = '';
-    req.on('data', chunk => data += chunk.toString());
-    req.on('end', () => {
-      try { resolve(JSON.parse(data)); } catch (_) { resolve({}); }
-    });
-    req.on('error', () => resolve({}));
-  });
-}
-
 module.exports = async (req, res) => {
   setCors(res);
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
@@ -155,9 +119,6 @@ module.exports = async (req, res) => {
       const a   = await authB2(acct);
       const bid = await getBucketId(a);
 
-      /* Applique CORS — indispensable pour que les lectures depuis le navigateur fonctionnent */
-      await fixCors(a, bid);
-
       let meta = { tracks: [], playlists: [], albums: [], artists: [] };
       try {
         const r = await fetch(`${a.downloadUrl}/file/${a._cfg.bucket}/${META_FILE}`, {
@@ -166,14 +127,11 @@ module.exports = async (req, res) => {
         if (r.ok) meta = parseMeta(await r.json());
       } catch (_) {}
 
-      const dlToken = await getDlToken(a, bid);
-
       /* Stats de l'autre compte en parallèle */
       let statsAutre = { used: 0, total: 10 * GB, free: 10 * GB, count: 0, pct: 0 };
       const autreAcct = acct === 1 ? 2 : 1;
       try {
-        const a2   = await authB2(autreAcct);
-        const bid2 = await getBucketId(a2);
+        const a2 = await authB2(autreAcct);
         let m2 = { tracks: [] };
         try {
           const r2 = await fetch(`${a2.downloadUrl}/file/${a2._cfg.bucket}/${META_FILE}`, {
@@ -192,13 +150,47 @@ module.exports = async (req, res) => {
         account: acct,
         tracks: meta.tracks, playlists: meta.playlists,
         albums: meta.albums, artists: meta.artists,
-        /* FIX: downloadUrl et bucketName sans aucun encodage supplémentaire
-           Le frontend construira l'URL avec les / non encodés               */
-        downloadUrl:   a.downloadUrl,
-        downloadToken: dlToken,
-        bucketName:    a._cfg.bucket,
         stats1, stats2,
       });
+      return;
+    }
+
+    /* ── STREAM — proxy audio B2 → navigateur (résout le CORS définitivement) ──
+       Le navigateur envoie un header Range pour le seek → on le transmet à B2   */
+    if (action === 'stream') {
+      const { key } = req.query;
+      if (!key) { res.status(400).json({ error: 'key manquant' }); return; }
+
+      const a = await authB2(acct);
+      const url = `${a.downloadUrl}/file/${a._cfg.bucket}/${key}`;
+
+      const b2Headers = { Authorization: a.authorizationToken };
+      if (req.headers.range) b2Headers['Range'] = req.headers.range;
+
+      const b2r = await fetch(url, { headers: b2Headers });
+
+      if (!b2r.ok && b2r.status !== 206) {
+        res.status(b2r.status).json({ error: 'Fichier introuvable sur B2' });
+        return;
+      }
+
+      const ct = b2r.headers.get('Content-Type') || 'audio/mpeg';
+      const cl = b2r.headers.get('Content-Length');
+      const cr = b2r.headers.get('Content-Range');
+
+      res.setHeader('Content-Type', ct);
+      res.setHeader('Accept-Ranges', 'bytes');
+      if (cl) res.setHeader('Content-Length', cl);
+      if (cr) res.setHeader('Content-Range', cr);
+      res.status(b2r.status === 206 ? 206 : 200);
+
+      const reader = b2r.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { res.end(); break; }
+        const ok = res.write(Buffer.from(value));
+        if (!ok) await new Promise(r => res.once('drain', r));
+      }
       return;
     }
 
@@ -206,8 +198,6 @@ module.exports = async (req, res) => {
     if (action === 'upload-creds') {
       const a   = await authB2(acct);
       const bid = await getBucketId(a);
-      /* Fixe CORS avant chaque upload — obligatoire pour le compte 2 */
-      await fixCors(a, bid);
       const up  = await getUploadUrl(a, bid);
       res.status(200).json({
         uploadUrl: up.uploadUrl,
@@ -222,10 +212,19 @@ module.exports = async (req, res) => {
     if (action === 'save-meta' && req.method === 'POST') {
       const rawBody = await readBody(req);
       const meta = parseMeta(rawBody);
-      const buf  = Buffer.from(JSON.stringify(meta), 'utf-8');
-      const a    = await authB2(acct);
-      const bid  = await getBucketId(a);
-      const up   = await getUploadUrl(a, bid);
+
+      /* Garde-fou : ne jamais sauvegarder un fichier vide si le body est suspect */
+      const bodyStr = JSON.stringify(rawBody);
+      if (!meta.tracks.length && (bodyStr === '{}' || bodyStr === '' || bodyStr === 'null')) {
+        console.warn('save-meta: body vide reçu — sauvegarde annulée');
+        res.status(400).json({ error: 'Body vide' });
+        return;
+      }
+
+      const buf = Buffer.from(JSON.stringify(meta), 'utf-8');
+      const a   = await authB2(acct);
+      const bid = await getBucketId(a);
+      const up  = await getUploadUrl(a, bid);
       await b2UploadBuf(up.uploadUrl, up.authorizationToken, META_FILE, buf, 'application/json');
       res.status(200).json({ ok: true });
       return;
@@ -251,7 +250,6 @@ module.exports = async (req, res) => {
       const [a1, a2] = await Promise.all([authB2(1), authB2(2)]);
       let m1 = { tracks: [] }, m2 = { tracks: [] };
       try {
-        const [bid1, bid2] = await Promise.all([getBucketId(a1), getBucketId(a2)]);
         const [r1, r2] = await Promise.all([
           fetch(`${a1.downloadUrl}/file/${a1._cfg.bucket}/${META_FILE}`, { headers: { Authorization: a1.authorizationToken } }),
           fetch(`${a2.downloadUrl}/file/${a2._cfg.bucket}/${META_FILE}`, { headers: { Authorization: a2.authorizationToken } }),
